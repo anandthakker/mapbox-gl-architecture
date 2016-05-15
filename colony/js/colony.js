@@ -10353,9 +10353,16 @@ var width = 600
   , text
 
 var colors = {
-      links: 'FAFAFA'
+    links: {
+      base: 'DDDDDD',
+      hover: 'FFFFFF',
+      lowlight: '444444'
+    }
     , text: {
-        subtitle: 'FAFAFA'
+      base: 'DDDDDD',
+      hover: 'FFFFFF',
+      lowlight: '444444',
+      subtitle: 'FAFAFA',
     }
     , nodes: {
         method: function(d) {
@@ -10389,8 +10396,8 @@ links.forEach(function(link) {
 })
 
 nodes.forEach(n => {
-  n.px = n.x = 2 * width * Math.random() - width / 2
-  n.py = n.y = 2 * height * Math.random() - height / 2
+  n.px = n.x = width * Math.random()
+  n.py = n.y = height * Math.random()
 })
 
 var groupDepth = 2
@@ -10522,11 +10529,8 @@ link.enter()
     .attr('y1', function(d) { return d.source.y; })
     .attr('x2', function(d) { return d.target.x; })
     .attr('y2', function(d) { return d.target.y; })
-    .style('stroke', colors.links)
-    .style('opacity', function(d) {
-        return d.hidden ? 0 : 0.3
-    })
-
+    .style('stroke', colors.links.base)
+    .style('stroke-width', 0.5)
 
 var nodeEnter = node.enter()
     .append('g')
@@ -10535,6 +10539,16 @@ var nodeEnter = node.enter()
     .call(force.drag)
     .on('mouseover', function(d) {
         console.log(d.id, groups[d.group], d)
+        link.style('stroke', function (l) {
+          return l.target.id === d.id || l.source.id === d.id
+            ? colors.links.hover : colors.links.lowlight
+        })
+
+        node.select('text').style('fill', colors.text.lowlight)
+        d3.selectAll([this].concat(childNodes(d), parentNodes(d), rootNodes(d)))
+          .select('text')
+          .style('fill', colors.text.hover)
+
         d3.select(this).select('circle')
           .style('fill', colors.nodes.hover)
         d3.selectAll(childNodes(d)).select('circle')
@@ -10551,6 +10565,9 @@ var nodeEnter = node.enter()
             .style('stroke-width', 2)
     })
     .on('mouseout', function(d) {
+        link.style('stroke', colors.links.base)
+        node.select('text').style('fill', colors.text.base)
+
         d3.select(this).select('circle')
           .style('fill', colors.nodes.method)
         d3.selectAll(childNodes(d)).select('circle')
@@ -10576,6 +10593,7 @@ nodeEnter.append('text')
     .attr('class', 'nodetext')
     .attr('text-anchor', 'middle')
     .attr('dy', -10)
+    .style('fill', colors.text.base)
     .text(function (d) { return d.id })
 
 
@@ -10602,7 +10620,7 @@ function focusNode (d) {
       resetForce.call(force).start()
       node.style('opacity', 1).style('pointer-events', 'all')
         .select('text').style('opacity', 1)
-      link.style('opacity', function(d) { return d.target.module ? 0.2 : 0.3 }) 
+      link.style('opacity', function(d) { return d.hidden ? 0 : 0.3 })
       focus = false
 
       d3.select('#readme').classed('showing-code', !!readme)
@@ -10637,7 +10655,7 @@ function focusNode (d) {
     }).start()
 
     link.style('opacity', function(l, i) {
-        return l.source.active && l.target.active ? 0.2 : 0.02
+        return l.source.active && l.target.active ? 0.2 : 0
     })
   }
 
