@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "colony --no-modules node_modules/mapbox-gl/js/mapbox-gl.js"
+    "build": "colony --no-modules node_modules/mapbox-gl/js/mapbox-gl.js --fork anandthakker/mapbox-gl-architecture"
   },
   "keywords": [],
   "author": "Anand Thakker <vestibule@anandthakker.net> (http://anandthakker.net/)",
