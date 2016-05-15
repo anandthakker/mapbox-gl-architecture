@@ -1,0 +1,167 @@
+<h1>mapbox-gl-function</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="function"><span class="keyword">function</span> <span class="title">createFunction</span><span class="params">(parameters, defaultType)</span> {</span>
+    <span class="keyword">var</span> fun;
+
+    <span class="keyword">if</span> (!isFunctionDefinition(parameters)) {
+        fun = <span class="keyword">function</span>() { <span class="keyword">return</span> parameters; };
+        fun.isFeatureConstant = <span class="literal">true</span>;
+        fun.isZoomConstant = <span class="literal">true</span>;
+
+    } <span class="keyword">else</span> {
+        <span class="keyword">var</span> zoomAndFeatureDependent = <span class="keyword">typeof</span> parameters.stops[<span class="number">0</span>][<span class="number">0</span>] === <span class="string">'object'</span>;
+        <span class="keyword">var</span> featureDependent = zoomAndFeatureDependent || parameters.property !== <span class="literal">undefined</span>;
+        <span class="keyword">var</span> zoomDependent = zoomAndFeatureDependent || !featureDependent;
+        <span class="keyword">var</span> type = parameters.type || defaultType || <span class="string">'exponential'</span>;
+
+        <span class="keyword">var</span> innerFun;
+        <span class="keyword">if</span> (type === <span class="string">'exponential'</span>) {
+            innerFun = evaluateExponentialFunction;
+        } <span class="keyword">else</span> <span class="keyword">if</span> (type === <span class="string">'interval'</span>) {
+            innerFun = evaluateIntervalFunction;
+        } <span class="keyword">else</span> <span class="keyword">if</span> (type === <span class="string">'categorical'</span>) {
+            innerFun = evaluateCategoricalFunction;
+        } <span class="keyword">else</span> {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Unknown function type "'</span> + type + <span class="string">'"'</span>);
+        }
+
+        <span class="keyword">if</span> (zoomAndFeatureDependent) {
+            <span class="keyword">var</span> featureFunctions = {};
+            <span class="keyword">var</span> featureFunctionStops = [];
+            <span class="keyword">for</span> (<span class="keyword">var</span> s = <span class="number">0</span>; s &lt; parameters.stops.length; s++) {
+                <span class="keyword">var</span> stop = parameters.stops[s];
+                <span class="keyword">if</span> (featureFunctions[stop[<span class="number">0</span>].zoom] === <span class="literal">undefined</span>) {
+                    featureFunctions[stop[<span class="number">0</span>].zoom] = {
+                        zoom: stop[<span class="number">0</span>].zoom,
+                        type: parameters.type,
+                        property: parameters.property,
+                        stops: []
+                    };
+                }
+                featureFunctions[stop[<span class="number">0</span>].zoom].stops.push([stop[<span class="number">0</span>].value, stop[<span class="number">1</span>]]);
+            }
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> z <span class="keyword">in</span> featureFunctions) {
+                featureFunctionStops.push([featureFunctions[z].zoom, createFunction(featureFunctions[z])]);
+            }
+            fun = <span class="keyword">function</span>(zoom, feature) {
+                <span class="keyword">return</span> evaluateExponentialFunction({ stops: featureFunctionStops, base: parameters.base }, zoom)(zoom, feature);
+            };
+            fun.isFeatureConstant = <span class="literal">false</span>;
+            fun.isZoomConstant = <span class="literal">false</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (zoomDependent) {
+            fun = <span class="keyword">function</span>(zoom) {
+                <span class="keyword">return</span> innerFun(parameters, zoom);
+            };
+            fun.isFeatureConstant = <span class="literal">true</span>;
+            fun.isZoomConstant = <span class="literal">false</span>;
+        } <span class="keyword">else</span> {
+            fun = <span class="keyword">function</span>(zoom, feature) {
+                <span class="keyword">return</span> innerFun(parameters, feature[parameters.property]);
+            };
+            fun.isFeatureConstant = <span class="literal">false</span>;
+            fun.isZoomConstant = <span class="literal">true</span>;
+        }
+    }
+
+    <span class="keyword">return</span> fun;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">evaluateCategoricalFunction</span><span class="params">(parameters, input)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; parameters.stops.length; i++) {
+        <span class="keyword">if</span> (input === parameters.stops[i][<span class="number">0</span>]) {
+            <span class="keyword">return</span> parameters.stops[i][<span class="number">1</span>];
+        }
+    }
+    <span class="keyword">return</span> parameters.stops[<span class="number">0</span>][<span class="number">1</span>];
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">evaluateIntervalFunction</span><span class="params">(parameters, input)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; parameters.stops.length; i++) {
+        <span class="keyword">if</span> (input &lt; parameters.stops[i][<span class="number">0</span>]) <span class="keyword">break</span>;
+    }
+    <span class="keyword">return</span> parameters.stops[Math.max(i - <span class="number">1</span>, <span class="number">0</span>)][<span class="number">1</span>];
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">evaluateExponentialFunction</span><span class="params">(parameters, input)</span> {</span>
+    <span class="keyword">var</span> base = parameters.base !== <span class="literal">undefined</span> ? parameters.base : <span class="number">1</span>;
+
+    <span class="keyword">var</span> i = <span class="number">0</span>;
+    <span class="keyword">while</span> (<span class="literal">true</span>) {
+        <span class="keyword">if</span> (i >= parameters.stops.length) <span class="keyword">break</span>;
+        <span class="keyword">else</span> <span class="keyword">if</span> (input &lt;= parameters.stops[i][<span class="number">0</span>]) <span class="keyword">break</span>;
+        <span class="keyword">else</span> i++;
+    }
+
+    <span class="keyword">if</span> (i === <span class="number">0</span>) {
+        <span class="keyword">return</span> parameters.stops[i][<span class="number">1</span>];
+
+    } <span class="keyword">else</span> <span class="keyword">if</span> (i === parameters.stops.length) {
+        <span class="keyword">return</span> parameters.stops[i - <span class="number">1</span>][<span class="number">1</span>];
+
+    } <span class="keyword">else</span> {
+        <span class="keyword">return</span> interpolate(
+            input,
+            base,
+            parameters.stops[i - <span class="number">1</span>][<span class="number">0</span>],
+            parameters.stops[i][<span class="number">0</span>],
+            parameters.stops[i - <span class="number">1</span>][<span class="number">1</span>],
+            parameters.stops[i][<span class="number">1</span>]
+        );
+    }
+}
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">interpolate</span><span class="params">(input, base, inputLower, inputUpper, outputLower, outputUpper)</span> {</span>
+    <span class="keyword">if</span> (<span class="keyword">typeof</span> outputLower === <span class="string">'function'</span>) {
+        <span class="keyword">return</span> <span class="keyword">function</span>() {
+            <span class="keyword">var</span> evaluatedLower = outputLower.apply(<span class="literal">undefined</span>, arguments);
+            <span class="keyword">var</span> evaluatedUpper = outputUpper.apply(<span class="literal">undefined</span>, arguments);
+            <span class="keyword">return</span> interpolate(input, base, inputLower, inputUpper, evaluatedLower, evaluatedUpper);
+        };
+    } <span class="keyword">else</span> <span class="keyword">if</span> (outputLower.length) {
+        <span class="keyword">return</span> interpolateArray(input, base, inputLower, inputUpper, outputLower, outputUpper);
+    } <span class="keyword">else</span> {
+        <span class="keyword">return</span> interpolateNumber(input, base, inputLower, inputUpper, outputLower, outputUpper);
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">interpolateNumber</span><span class="params">(input, base, inputLower, inputUpper, outputLower, outputUpper)</span> {</span>
+    <span class="keyword">var</span> difference =  inputUpper - inputLower;
+    <span class="keyword">var</span> progress = input - inputLower;
+
+    <span class="keyword">var</span> ratio;
+    <span class="keyword">if</span> (base === <span class="number">1</span>) {
+        ratio = progress / difference;
+    } <span class="keyword">else</span> {
+        ratio = (Math.pow(base, progress) - <span class="number">1</span>) / (Math.pow(base, difference) - <span class="number">1</span>);
+    }
+
+    <span class="keyword">return</span> (outputLower * (<span class="number">1</span> - ratio)) + (outputUpper * ratio);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">interpolateArray</span><span class="params">(input, base, inputLower, inputUpper, outputLower, outputUpper)</span> {</span>
+    <span class="keyword">var</span> output = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; outputLower.length; i++) {
+        output[i] = interpolateNumber(input, base, inputLower, inputUpper, outputLower[i], outputUpper[i]);
+    }
+    <span class="keyword">return</span> output;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isFunctionDefinition</span><span class="params">(value)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">typeof</span> value === <span class="string">'object'</span> &amp;&amp; value.stops;
+}
+
+
+module.exports.isFunctionDefinition = isFunctionDefinition;
+
+module.exports.interpolated = <span class="keyword">function</span>(parameters) {
+    <span class="keyword">return</span> createFunction(parameters, <span class="string">'exponential'</span>);
+};
+
+module.exports[<span class="string">'piecewise-constant'</span>] = <span class="keyword">function</span>(parameters) {
+    <span class="keyword">return</span> createFunction(parameters, <span class="string">'interval'</span>);
+};
+</code></pre>

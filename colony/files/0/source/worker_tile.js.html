@@ -1,0 +1,289 @@
+<h1>worker_tile.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> FeatureIndex = require(<span class="string">'../data/feature_index'</span>);
+<span class="keyword">var</span> CollisionTile = require(<span class="string">'../symbol/collision_tile'</span>);
+<span class="keyword">var</span> Bucket = require(<span class="string">'../data/bucket'</span>);
+<span class="keyword">var</span> CollisionBoxArray = require(<span class="string">'../symbol/collision_box'</span>);
+<span class="keyword">var</span> DictionaryCoder = require(<span class="string">'../util/dictionary_coder'</span>);
+
+module.exports = WorkerTile;
+
+<span class="function"><span class="keyword">function</span> <span class="title">WorkerTile</span><span class="params">(params)</span> {</span>
+    <span class="keyword">this</span>.coord = params.coord;
+    <span class="keyword">this</span>.uid = params.uid;
+    <span class="keyword">this</span>.zoom = params.zoom;
+    <span class="keyword">this</span>.tileSize = params.tileSize;
+    <span class="keyword">this</span>.source = params.source;
+    <span class="keyword">this</span>.overscaling = params.overscaling;
+    <span class="keyword">this</span>.angle = params.angle;
+    <span class="keyword">this</span>.pitch = params.pitch;
+    <span class="keyword">this</span>.showCollisionBoxes = params.showCollisionBoxes;
+}
+
+WorkerTile.prototype.parse = <span class="keyword">function</span>(data, layerFamilies, actor, rawTileData, callback) {
+
+    <span class="keyword">this</span>.status = <span class="string">'parsing'</span>;
+    <span class="keyword">this</span>.data = data;
+
+    <span class="keyword">this</span>.collisionBoxArray = <span class="keyword">new</span> CollisionBoxArray();
+    <span class="keyword">var</span> collisionTile = <span class="keyword">new</span> CollisionTile(<span class="keyword">this</span>.angle, <span class="keyword">this</span>.pitch, <span class="keyword">this</span>.collisionBoxArray);
+    <span class="keyword">var</span> featureIndex = <span class="keyword">new</span> FeatureIndex(<span class="keyword">this</span>.coord, <span class="keyword">this</span>.overscaling, collisionTile, data.layers);
+    <span class="keyword">var</span> sourceLayerCoder = <span class="keyword">new</span> DictionaryCoder(data.layers ? Object.keys(data.layers).sort() : [<span class="string">'_geojsonTileLayer'</span>]);
+
+    <span class="keyword">var</span> stats = { _total: <span class="number">0</span> };
+
+    <span class="keyword">var</span> tile = <span class="keyword">this</span>;
+    <span class="keyword">var</span> bucketsById = {};
+    <span class="keyword">var</span> bucketsBySourceLayer = {};
+    <span class="keyword">var</span> i;
+    <span class="keyword">var</span> layer;
+    <span class="keyword">var</span> sourceLayerId;
+    <span class="keyword">var</span> bucket;
+
+    <span class="comment">// Map non-ref layers to buckets.</span>
+    <span class="keyword">var</span> bucketIndex = <span class="number">0</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> layerId <span class="keyword">in</span> layerFamilies) {
+        layer = layerFamilies[layerId][<span class="number">0</span>];
+
+        <span class="keyword">if</span> (layer.source !== <span class="keyword">this</span>.source) <span class="keyword">continue</span>;
+        <span class="keyword">if</span> (layer.ref) <span class="keyword">continue</span>;
+        <span class="keyword">if</span> (layer.minzoom &amp;&amp; <span class="keyword">this</span>.zoom &lt; layer.minzoom) <span class="keyword">continue</span>;
+        <span class="keyword">if</span> (layer.maxzoom &amp;&amp; <span class="keyword">this</span>.zoom >= layer.maxzoom) <span class="keyword">continue</span>;
+        <span class="keyword">if</span> (layer.layout &amp;&amp; layer.layout.visibility === <span class="string">'none'</span>) <span class="keyword">continue</span>;
+        <span class="keyword">if</span> (data.layers &amp;&amp; !data.layers[layer.sourceLayer]) <span class="keyword">continue</span>;
+
+        bucket = Bucket.create({
+            layer: layer,
+            index: bucketIndex++,
+            childLayers: layerFamilies[layerId],
+            zoom: <span class="keyword">this</span>.zoom,
+            overscaling: <span class="keyword">this</span>.overscaling,
+            showCollisionBoxes: <span class="keyword">this</span>.showCollisionBoxes,
+            collisionBoxArray: <span class="keyword">this</span>.collisionBoxArray,
+            sourceLayerIndex: sourceLayerCoder.encode(layer.sourceLayer || <span class="string">'_geojsonTileLayer'</span>)
+        });
+        bucket.createFilter();
+
+        bucketsById[layer.id] = bucket;
+
+        <span class="keyword">if</span> (data.layers) { <span class="comment">// vectortile</span>
+            sourceLayerId = layer.sourceLayer;
+            bucketsBySourceLayer[sourceLayerId] = bucketsBySourceLayer[sourceLayerId] || {};
+            bucketsBySourceLayer[sourceLayerId][layer.id] = bucket;
+        }
+    }
+
+    <span class="comment">// read each layer, and sort its features into buckets</span>
+    <span class="keyword">if</span> (data.layers) { <span class="comment">// vectortile</span>
+        <span class="keyword">for</span> (sourceLayerId <span class="keyword">in</span> bucketsBySourceLayer) {
+            layer = data.layers[sourceLayerId];
+            <span class="keyword">if</span> (layer) {
+                sortLayerIntoBuckets(layer, bucketsBySourceLayer[sourceLayerId]);
+            }
+        }
+    } <span class="keyword">else</span> { <span class="comment">// geojson</span>
+        sortLayerIntoBuckets(data, bucketsById);
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">sortLayerIntoBuckets</span><span class="params">(layer, buckets)</span> {</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; layer.length; i++) {
+            <span class="keyword">var</span> feature = layer.feature(i);
+            feature.index = i;
+            <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> buckets) {
+                <span class="keyword">if</span> (buckets[id].filter(feature))
+                    buckets[id].features.push(feature);
+            }
+        }
+    }
+
+    <span class="keyword">var</span> buckets = [],
+        symbolBuckets = <span class="keyword">this</span>.symbolBuckets = [],
+        otherBuckets = [];
+
+    featureIndex.bucketLayerIDs = {};
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> bucketsById) {
+        bucket = bucketsById[id];
+        <span class="keyword">if</span> (bucket.features.length === <span class="number">0</span>) <span class="keyword">continue</span>;
+
+        featureIndex.bucketLayerIDs[bucket.index] = bucket.childLayers.map(getLayerId);
+
+        buckets.push(bucket);
+
+        <span class="keyword">if</span> (bucket.type === <span class="string">'symbol'</span>)
+            symbolBuckets.push(bucket);
+        <span class="keyword">else</span>
+            otherBuckets.push(bucket);
+    }
+
+    <span class="keyword">var</span> icons = {};
+    <span class="keyword">var</span> stacks = {};
+    <span class="keyword">var</span> deps = <span class="number">0</span>;
+
+
+    <span class="keyword">if</span> (symbolBuckets.length > <span class="number">0</span>) {
+
+        <span class="comment">// Get dependencies for symbol buckets</span>
+        <span class="keyword">for</span> (i = symbolBuckets.length - <span class="number">1</span>; i >= <span class="number">0</span>; i--) {
+            symbolBuckets[i].updateIcons(icons);
+            symbolBuckets[i].updateFont(stacks);
+        }
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> fontName <span class="keyword">in</span> stacks) {
+            stacks[fontName] = Object.keys(stacks[fontName]).map(Number);
+        }
+        icons = Object.keys(icons);
+
+        actor.send(<span class="string">'get glyphs'</span>, {uid: <span class="keyword">this</span>.uid, stacks: stacks}, <span class="keyword">function</span>(err, newStacks) {
+            stacks = newStacks;
+            gotDependency(err);
+        });
+
+        <span class="keyword">if</span> (icons.length) {
+            actor.send(<span class="string">'get icons'</span>, {icons: icons}, <span class="keyword">function</span>(err, newIcons) {
+                icons = newIcons;
+                gotDependency(err);
+            });
+        } <span class="keyword">else</span> {
+            gotDependency();
+        }
+    }
+
+    <span class="comment">// immediately parse non-symbol buckets (they have no dependencies)</span>
+    <span class="keyword">for</span> (i = otherBuckets.length - <span class="number">1</span>; i >= <span class="number">0</span>; i--) {
+        parseBucket(<span class="keyword">this</span>, otherBuckets[i]);
+    }
+
+    <span class="keyword">if</span> (symbolBuckets.length === <span class="number">0</span>)
+        <span class="keyword">return</span> done();
+
+    <span class="function"><span class="keyword">function</span> <span class="title">gotDependency</span><span class="params">(err)</span> {</span>
+        <span class="keyword">if</span> (err) <span class="keyword">return</span> callback(err);
+        deps++;
+        <span class="keyword">if</span> (deps === <span class="number">2</span>) {
+            <span class="comment">// all symbol bucket dependencies fetched; parse them in proper order</span>
+            <span class="keyword">for</span> (<span class="keyword">var</span> i = symbolBuckets.length - <span class="number">1</span>; i >= <span class="number">0</span>; i--) {
+                parseBucket(tile, symbolBuckets[i]);
+            }
+            done();
+        }
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">parseBucket</span><span class="params">(tile, bucket)</span> {</span>
+        <span class="keyword">var</span> now = Date.now();
+        bucket.populateBuffers(collisionTile, stacks, icons);
+        <span class="keyword">var</span> time = Date.now() - now;
+
+
+        <span class="keyword">if</span> (bucket.type !== <span class="string">'symbol'</span>) {
+            <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; bucket.features.length; i++) {
+                <span class="keyword">var</span> feature = bucket.features[i];
+                featureIndex.insert(feature, feature.index, bucket.sourceLayerIndex, bucket.index);
+            }
+        }
+
+        bucket.features = <span class="literal">null</span>;
+
+        stats._total += time;
+        stats[bucket.id] = (stats[bucket.id] || <span class="number">0</span>) + time;
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">done</span><span class="params">()</span> {</span>
+        tile.status = <span class="string">'done'</span>;
+
+        <span class="keyword">if</span> (tile.redoPlacementAfterDone) {
+            tile.redoPlacement(tile.angle, tile.pitch, <span class="literal">null</span>);
+            tile.redoPlacementAfterDone = <span class="literal">false</span>;
+        }
+
+        <span class="keyword">var</span> featureIndex_ = featureIndex.serialize();
+        <span class="keyword">var</span> collisionTile_ = collisionTile.serialize();
+        <span class="keyword">var</span> collisionBoxArray = tile.collisionBoxArray.serialize();
+        <span class="keyword">var</span> transferables = [rawTileData].concat(featureIndex_.transferables).concat(collisionTile_.transferables);
+
+        <span class="keyword">var</span> nonEmptyBuckets = buckets.filter(isBucketEmpty);
+
+        callback(<span class="literal">null</span>, {
+            buckets: nonEmptyBuckets.map(serializeBucket),
+            bucketStats: stats, <span class="comment">// TODO put this in a separate message?</span>
+            featureIndex: featureIndex_.data,
+            collisionTile: collisionTile_.data,
+            collisionBoxArray: collisionBoxArray,
+            rawTileData: rawTileData
+        }, getTransferables(nonEmptyBuckets).concat(transferables));
+    }
+};
+
+WorkerTile.prototype.redoPlacement = <span class="keyword">function</span>(angle, pitch, showCollisionBoxes) {
+    <span class="keyword">if</span> (<span class="keyword">this</span>.status !== <span class="string">'done'</span>) {
+        <span class="keyword">this</span>.redoPlacementAfterDone = <span class="literal">true</span>;
+        <span class="keyword">this</span>.angle = angle;
+        <span class="keyword">return</span> {};
+    }
+
+    <span class="keyword">var</span> collisionTile = <span class="keyword">new</span> CollisionTile(angle, pitch, <span class="keyword">this</span>.collisionBoxArray);
+
+    <span class="keyword">var</span> buckets = <span class="keyword">this</span>.symbolBuckets;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = buckets.length - <span class="number">1</span>; i >= <span class="number">0</span>; i--) {
+        buckets[i].placeFeatures(collisionTile, showCollisionBoxes);
+    }
+
+    <span class="keyword">var</span> collisionTile_ = collisionTile.serialize();
+
+    <span class="keyword">var</span> nonEmptyBuckets = buckets.filter(isBucketEmpty);
+
+    <span class="keyword">return</span> {
+        result: {
+            buckets: nonEmptyBuckets.map(serializeBucket),
+            collisionTile: collisionTile_.data
+        },
+        transferables: getTransferables(nonEmptyBuckets).concat(collisionTile_.transferables)
+    };
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">isBucketEmpty</span><span class="params">(bucket)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> programName <span class="keyword">in</span> bucket.arrayGroups) {
+        <span class="keyword">var</span> programArrayGroups = bucket.arrayGroups[programName];
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; programArrayGroups.length; k++) {
+            <span class="keyword">var</span> programArrayGroup = programArrayGroups[k];
+            <span class="keyword">for</span> (<span class="keyword">var</span> layoutOrPaint <span class="keyword">in</span> programArrayGroup) {
+                <span class="keyword">var</span> arrays = programArrayGroup[layoutOrPaint];
+                <span class="keyword">for</span> (<span class="keyword">var</span> bufferName <span class="keyword">in</span> arrays) {
+                    <span class="keyword">if</span> (arrays[bufferName].length > <span class="number">0</span>) <span class="keyword">return</span> <span class="literal">true</span>;
+                }
+            }
+        }
+    }
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">serializeBucket</span><span class="params">(bucket)</span> {</span>
+    <span class="keyword">return</span> bucket.serialize();
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getTransferables</span><span class="params">(buckets)</span> {</span>
+    <span class="keyword">var</span> transferables = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> i <span class="keyword">in</span> buckets) {
+        <span class="keyword">var</span> bucket = buckets[i];
+        <span class="keyword">for</span> (<span class="keyword">var</span> programName <span class="keyword">in</span> bucket.arrayGroups) {
+            <span class="keyword">var</span> programArrayGroups = bucket.arrayGroups[programName];
+            <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; programArrayGroups.length; k++) {
+                <span class="keyword">var</span> programArrayGroup = programArrayGroups[k];
+                <span class="keyword">for</span> (<span class="keyword">var</span> layoutOrPaint <span class="keyword">in</span> programArrayGroup) {
+                    <span class="keyword">var</span> arrays = programArrayGroup[layoutOrPaint];
+                    <span class="keyword">for</span> (<span class="keyword">var</span> bufferName <span class="keyword">in</span> arrays) {
+                        transferables.push(arrays[bufferName].arrayBuffer);
+                    }
+                }
+            }
+        }
+    }
+    <span class="keyword">return</span> transferables;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getLayerId</span><span class="params">(layer)</span> {</span>
+    <span class="keyword">return</span> layer.id;
+}
+</code></pre>

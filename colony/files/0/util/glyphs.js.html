@@ -1,0 +1,35 @@
+<h1>glyphs.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Glyphs;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Glyphs</span><span class="params">(pbf, end)</span> {</span>
+    <span class="keyword">this</span>.stacks = pbf.readFields(readFontstacks, [], end);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">readFontstacks</span><span class="params">(tag, stacks, pbf)</span> {</span>
+    <span class="keyword">if</span> (tag === <span class="number">1</span>) {
+        <span class="keyword">var</span> fontstack = pbf.readMessage(readFontstack, {glyphs: {}});
+        stacks.push(fontstack);
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">readFontstack</span><span class="params">(tag, fontstack, pbf)</span> {</span>
+    <span class="keyword">if</span> (tag === <span class="number">1</span>) fontstack.name = pbf.readString();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">2</span>) fontstack.range = pbf.readString();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">3</span>) {
+        <span class="keyword">var</span> glyph = pbf.readMessage(readGlyph, {});
+        fontstack.glyphs[glyph.id] = glyph;
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">readGlyph</span><span class="params">(tag, glyph, pbf)</span> {</span>
+    <span class="keyword">if</span> (tag === <span class="number">1</span>) glyph.id = pbf.readVarint();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">2</span>) glyph.bitmap = pbf.readBytes();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">3</span>) glyph.width = pbf.readVarint();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">4</span>) glyph.height = pbf.readVarint();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">5</span>) glyph.left = pbf.readSVarint();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">6</span>) glyph.top = pbf.readSVarint();
+    <span class="keyword">else</span> <span class="keyword">if</span> (tag === <span class="number">7</span>) glyph.advance = pbf.readVarint();
+}
+</code></pre>

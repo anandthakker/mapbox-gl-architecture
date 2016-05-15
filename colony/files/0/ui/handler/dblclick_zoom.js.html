@@ -1,0 +1,55 @@
+<h1>dblclick_zoom.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = DoubleClickZoomHandler;
+
+<span class="comment">/**
+ * The `DoubleClickZoomHandler` allows a user to zoom the map around point by
+ * double clicking.
+ * @class DoubleClickZoomHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">DoubleClickZoomHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._onDblClick = <span class="keyword">this</span>._onDblClick.bind(<span class="keyword">this</span>);
+}
+
+DoubleClickZoomHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "double click to zoom" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Enable the "double click to zoom" interaction.
+     * @example
+     * map.doubleClickZoom.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._map.on(<span class="string">'dblclick'</span>, <span class="keyword">this</span>._onDblClick);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "double click to zoom" interaction.
+     * @example
+     * map.doubleClickZoom.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._map.off(<span class="string">'dblclick'</span>, <span class="keyword">this</span>._onDblClick);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onDblClick: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._map.zoomTo(<span class="keyword">this</span>._map.getZoom() +
+            (e.originalEvent.shiftKey ? -<span class="number">1</span> : <span class="number">1</span>), {around: e.lngLat});
+    }
+};
+</code></pre>

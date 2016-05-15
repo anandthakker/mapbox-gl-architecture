@@ -1,0 +1,77 @@
+<h1>geolocate.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Control = require(<span class="string">'./control'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../../util/browser'</span>);
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = Geolocate;
+
+<span class="keyword">var</span> geoOptions = { enableHighAccuracy: <span class="literal">false</span>, timeout: <span class="number">6000</span> <span class="comment">/* 6sec */</span> };
+
+
+<span class="comment">/**
+ * Creates a geolocation control
+ * @class Geolocate
+ * @param {Object} [options]
+ * @param {string} [options.position='top-right'] A string indicating the control's position on the map. Options are `top-right`, `top-left`, `bottom-right`, `bottom-left`
+ * @example
+ * map.addControl(new mapboxgl.Geolocate({position: 'top-left'})); // position is optional
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Geolocate</span><span class="params">(options)</span> {</span>
+    util.setOptions(<span class="keyword">this</span>, options);
+}
+
+Geolocate.prototype = util.inherit(Control, {
+    options: {
+        position: <span class="string">'top-right'</span>
+    },
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">var</span> className = <span class="string">'mapboxgl-ctrl'</span>;
+
+        <span class="keyword">var</span> container = <span class="keyword">this</span>._container = DOM.create(<span class="string">'div'</span>, className + <span class="string">'-group'</span>, map.getContainer());
+        <span class="keyword">if</span> (!browser.supportsGeolocation) <span class="keyword">return</span> container;
+
+        <span class="keyword">this</span>._container.addEventListener(<span class="string">'contextmenu'</span>, <span class="keyword">this</span>._onContextMenu.bind(<span class="keyword">this</span>));
+
+        <span class="keyword">this</span>._geolocateButton = DOM.create(<span class="string">'button'</span>, (className + <span class="string">'-icon '</span> + className + <span class="string">'-geolocate'</span>), <span class="keyword">this</span>._container);
+        <span class="keyword">this</span>._geolocateButton.addEventListener(<span class="string">'click'</span>, <span class="keyword">this</span>._onClickGeolocate.bind(<span class="keyword">this</span>));
+        <span class="keyword">return</span> container;
+    },
+
+    _onContextMenu: <span class="keyword">function</span>(e) {
+        e.preventDefault();
+    },
+
+    _onClickGeolocate: <span class="keyword">function</span>() {
+        navigator.geolocation.getCurrentPosition(<span class="keyword">this</span>._success.bind(<span class="keyword">this</span>), <span class="keyword">this</span>._error.bind(<span class="keyword">this</span>), geoOptions);
+
+        <span class="comment">// This timeout ensures that we still call finish() even if</span>
+        <span class="comment">// the user declines to share their location in Firefox</span>
+        <span class="keyword">this</span>._timeoutId = setTimeout(<span class="keyword">this</span>._finish.bind(<span class="keyword">this</span>), <span class="number">10000</span> <span class="comment">/* 10sec */</span>);
+    },
+
+    _success: <span class="keyword">function</span>(position) {
+        <span class="keyword">this</span>._map.jumpTo({
+            center: [position.coords.longitude, position.coords.latitude],
+            zoom: <span class="number">17</span>,
+            bearing: <span class="number">0</span>,
+            pitch: <span class="number">0</span>
+        });
+        <span class="keyword">this</span>._finish();
+    },
+
+    _error: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._finish();
+    },
+
+    _finish: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._timeoutId) { clearTimeout(<span class="keyword">this</span>._timeoutId); }
+        <span class="keyword">this</span>._timeoutId = <span class="literal">undefined</span>;
+    }
+
+});
+
+</code></pre>

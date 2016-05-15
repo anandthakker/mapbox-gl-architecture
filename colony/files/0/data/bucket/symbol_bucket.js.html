@@ -1,0 +1,562 @@
+<h1>symbol_bucket.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+<span class="keyword">var</span> Bucket = require(<span class="string">'../bucket'</span>);
+<span class="keyword">var</span> Anchor = require(<span class="string">'../../symbol/anchor'</span>);
+<span class="keyword">var</span> getAnchors = require(<span class="string">'../../symbol/get_anchors'</span>);
+<span class="keyword">var</span> resolveTokens = require(<span class="string">'../../util/token'</span>);
+<span class="keyword">var</span> Quads = require(<span class="string">'../../symbol/quads'</span>);
+<span class="keyword">var</span> Shaping = require(<span class="string">'../../symbol/shaping'</span>);
+<span class="keyword">var</span> resolveText = require(<span class="string">'../../symbol/resolve_text'</span>);
+<span class="keyword">var</span> mergeLines = require(<span class="string">'../../symbol/mergelines'</span>);
+<span class="keyword">var</span> clipLine = require(<span class="string">'../../symbol/clip_line'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> loadGeometry = require(<span class="string">'../load_geometry'</span>);
+<span class="keyword">var</span> CollisionFeature = require(<span class="string">'../../symbol/collision_feature'</span>);
+
+<span class="keyword">var</span> shapeText = Shaping.shapeText;
+<span class="keyword">var</span> shapeIcon = Shaping.shapeIcon;
+<span class="keyword">var</span> getGlyphQuads = Quads.getGlyphQuads;
+<span class="keyword">var</span> getIconQuads = Quads.getIconQuads;
+
+<span class="keyword">var</span> EXTENT = Bucket.EXTENT;
+
+module.exports = SymbolBucket;
+
+<span class="function"><span class="keyword">function</span> <span class="title">SymbolBucket</span><span class="params">(options)</span> {</span>
+    Bucket.apply(<span class="keyword">this</span>, arguments);
+    <span class="keyword">this</span>.showCollisionBoxes = options.showCollisionBoxes;
+    <span class="keyword">this</span>.overscaling = options.overscaling;
+    <span class="keyword">this</span>.collisionBoxArray = options.collisionBoxArray;
+
+    <span class="keyword">this</span>.sdfIcons = options.sdfIcons;
+    <span class="keyword">this</span>.iconsNeedLinear = options.iconsNeedLinear;
+    <span class="keyword">this</span>.adjustedTextSize = options.adjustedTextSize;
+    <span class="keyword">this</span>.adjustedIconSize = options.adjustedIconSize;
+    <span class="keyword">this</span>.fontstack = options.fontstack;
+}
+
+SymbolBucket.prototype = util.inherit(Bucket, {});
+
+SymbolBucket.prototype.serialize = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> serialized = Bucket.prototype.serialize.apply(<span class="keyword">this</span>);
+    serialized.sdfIcons = <span class="keyword">this</span>.sdfIcons;
+    serialized.iconsNeedLinear = <span class="keyword">this</span>.iconsNeedLinear;
+    serialized.adjustedTextSize = <span class="keyword">this</span>.adjustedTextSize;
+    serialized.adjustedIconSize = <span class="keyword">this</span>.adjustedIconSize;
+    serialized.fontstack = <span class="keyword">this</span>.fontstack;
+    <span class="keyword">return</span> serialized;
+};
+
+<span class="keyword">var</span> programAttributes = [{
+    name: <span class="string">'a_pos'</span>,
+    components: <span class="number">2</span>,
+    type: <span class="string">'Int16'</span>
+}, {
+    name: <span class="string">'a_offset'</span>,
+    components: <span class="number">2</span>,
+    type: <span class="string">'Int16'</span>
+}, {
+    name: <span class="string">'a_data1'</span>,
+    components: <span class="number">4</span>,
+    type: <span class="string">'Uint8'</span>
+}, {
+    name: <span class="string">'a_data2'</span>,
+    components: <span class="number">2</span>,
+    type: <span class="string">'Uint8'</span>
+}];
+
+<span class="function"><span class="keyword">function</span> <span class="title">addVertex</span><span class="params">(array, x, y, ox, oy, tx, ty, minzoom, maxzoom, labelminzoom)</span> {</span>
+    <span class="keyword">return</span> array.emplaceBack(
+            <span class="comment">// pos</span>
+            x,
+            y,
+            <span class="comment">// offset</span>
+            Math.round(ox * <span class="number">64</span>), <span class="comment">// use 1/64 pixels for placement</span>
+            Math.round(oy * <span class="number">64</span>),
+            <span class="comment">// data1</span>
+            tx / <span class="number">4</span>,                   <span class="comment">// tex</span>
+            ty / <span class="number">4</span>,                   <span class="comment">// tex</span>
+            (labelminzoom || <span class="number">0</span>) * <span class="number">10</span>, <span class="comment">// labelminzoom</span>
+            <span class="number">0</span>,
+            <span class="comment">// data2</span>
+            (minzoom || <span class="number">0</span>) * <span class="number">10</span>,               <span class="comment">// minzoom</span>
+            Math.min(maxzoom || <span class="number">25</span>, <span class="number">25</span>) * <span class="number">10</span>); <span class="comment">// minzoom</span>
+}
+
+SymbolBucket.prototype.addCollisionBoxVertex = <span class="keyword">function</span>(vertexArray, point, extrude, maxZoom, placementZoom) {
+    <span class="keyword">return</span> vertexArray.emplaceBack(
+            <span class="comment">// pos</span>
+            point.x,
+            point.y,
+            <span class="comment">// extrude</span>
+            Math.round(extrude.x),
+            Math.round(extrude.y),
+            <span class="comment">// data</span>
+            maxZoom * <span class="number">10</span>,
+            placementZoom * <span class="number">10</span>);
+};
+
+SymbolBucket.prototype.programInterfaces = {
+
+    glyph: {
+        vertexBuffer: <span class="literal">true</span>,
+        elementBuffer: <span class="literal">true</span>,
+        layoutAttributes: programAttributes
+    },
+
+    icon: {
+        vertexBuffer: <span class="literal">true</span>,
+        elementBuffer: <span class="literal">true</span>,
+        layoutAttributes: programAttributes
+    },
+
+    collisionBox: {
+        vertexBuffer: <span class="literal">true</span>,
+
+        layoutAttributes: [{
+            name: <span class="string">'a_pos'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Int16'</span>
+        }, {
+            name: <span class="string">'a_extrude'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Int16'</span>
+        }, {
+            name: <span class="string">'a_data'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Uint8'</span>
+        }]
+    }
+};
+
+SymbolBucket.prototype.populateBuffers = <span class="keyword">function</span>(collisionTile, stacks, icons) {
+
+    <span class="comment">// To reduce the number of labels that jump around when zooming we need</span>
+    <span class="comment">// to use a text-size value that is the same for all zoom levels.</span>
+    <span class="comment">// This calculates text-size at a high zoom level so that all tiles can</span>
+    <span class="comment">// use the same value when calculating anchor positions.</span>
+    <span class="keyword">var</span> zoomHistory = { lastIntegerZoom: <span class="literal">Infinity</span>, lastIntegerZoomTime: <span class="number">0</span>, lastZoom: <span class="number">0</span> };
+    <span class="keyword">this</span>.adjustedTextMaxSize = <span class="keyword">this</span>.layer.getLayoutValue(<span class="string">'text-size'</span>, {zoom: <span class="number">18</span>, zoomHistory: zoomHistory});
+    <span class="keyword">this</span>.adjustedTextSize = <span class="keyword">this</span>.layer.getLayoutValue(<span class="string">'text-size'</span>, {zoom: <span class="keyword">this</span>.zoom + <span class="number">1</span>, zoomHistory: zoomHistory});
+    <span class="keyword">this</span>.adjustedIconMaxSize = <span class="keyword">this</span>.layer.getLayoutValue(<span class="string">'icon-size'</span>, {zoom: <span class="number">18</span>, zoomHistory: zoomHistory});
+    <span class="keyword">this</span>.adjustedIconSize = <span class="keyword">this</span>.layer.getLayoutValue(<span class="string">'icon-size'</span>, {zoom: <span class="keyword">this</span>.zoom + <span class="number">1</span>, zoomHistory: zoomHistory});
+
+    <span class="keyword">var</span> tileSize = <span class="number">512</span> * <span class="keyword">this</span>.overscaling;
+    <span class="keyword">this</span>.tilePixelRatio = EXTENT / tileSize;
+    <span class="keyword">this</span>.compareText = {};
+    <span class="keyword">this</span>.symbolInstances = [];
+    <span class="keyword">this</span>.iconsNeedLinear = <span class="literal">false</span>;
+
+    <span class="keyword">var</span> layout = <span class="keyword">this</span>.layer.layout;
+    <span class="keyword">var</span> features = <span class="keyword">this</span>.features;
+    <span class="keyword">var</span> textFeatures = <span class="keyword">this</span>.textFeatures;
+
+    <span class="keyword">var</span> horizontalAlign = <span class="number">0.5</span>,
+        verticalAlign = <span class="number">0.5</span>;
+
+    <span class="keyword">switch</span> (layout[<span class="string">'text-anchor'</span>]) {
+    <span class="keyword">case</span> <span class="string">'right'</span>:
+    <span class="keyword">case</span> <span class="string">'top-right'</span>:
+    <span class="keyword">case</span> <span class="string">'bottom-right'</span>:
+        horizontalAlign = <span class="number">1</span>;
+        <span class="keyword">break</span>;
+    <span class="keyword">case</span> <span class="string">'left'</span>:
+    <span class="keyword">case</span> <span class="string">'top-left'</span>:
+    <span class="keyword">case</span> <span class="string">'bottom-left'</span>:
+        horizontalAlign = <span class="number">0</span>;
+        <span class="keyword">break</span>;
+    }
+
+    <span class="keyword">switch</span> (layout[<span class="string">'text-anchor'</span>]) {
+    <span class="keyword">case</span> <span class="string">'bottom'</span>:
+    <span class="keyword">case</span> <span class="string">'bottom-right'</span>:
+    <span class="keyword">case</span> <span class="string">'bottom-left'</span>:
+        verticalAlign = <span class="number">1</span>;
+        <span class="keyword">break</span>;
+    <span class="keyword">case</span> <span class="string">'top'</span>:
+    <span class="keyword">case</span> <span class="string">'top-right'</span>:
+    <span class="keyword">case</span> <span class="string">'top-left'</span>:
+        verticalAlign = <span class="number">0</span>;
+        <span class="keyword">break</span>;
+    }
+
+    <span class="keyword">var</span> justify = layout[<span class="string">'text-justify'</span>] === <span class="string">'right'</span> ? <span class="number">1</span> :
+        layout[<span class="string">'text-justify'</span>] === <span class="string">'left'</span> ? <span class="number">0</span> :
+        <span class="number">0.5</span>;
+
+    <span class="keyword">var</span> oneEm = <span class="number">24</span>;
+    <span class="keyword">var</span> lineHeight = layout[<span class="string">'text-line-height'</span>] * oneEm;
+    <span class="keyword">var</span> maxWidth = layout[<span class="string">'symbol-placement'</span>] !== <span class="string">'line'</span> ? layout[<span class="string">'text-max-width'</span>] * oneEm : <span class="number">0</span>;
+    <span class="keyword">var</span> spacing = layout[<span class="string">'text-letter-spacing'</span>] * oneEm;
+    <span class="keyword">var</span> textOffset = [layout[<span class="string">'text-offset'</span>][<span class="number">0</span>] * oneEm, layout[<span class="string">'text-offset'</span>][<span class="number">1</span>] * oneEm];
+    <span class="keyword">var</span> fontstack = <span class="keyword">this</span>.fontstack = layout[<span class="string">'text-font'</span>].join(<span class="string">','</span>);
+
+    <span class="keyword">var</span> geometries = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> g = <span class="number">0</span>; g &lt; features.length; g++) {
+        geometries.push(loadGeometry(features[g]));
+    }
+
+    <span class="keyword">if</span> (layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>) {
+        <span class="comment">// Merge adjacent lines with the same text to improve labelling.</span>
+        <span class="comment">// It's better to place labels on one long line than on many short segments.</span>
+        <span class="keyword">var</span> merged = mergeLines(features, textFeatures, geometries);
+
+        geometries = merged.geometries;
+        features = merged.features;
+        textFeatures = merged.textFeatures;
+    }
+
+    <span class="keyword">var</span> shapedText, shapedIcon;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; features.length; k++) {
+        <span class="keyword">if</span> (!geometries[k]) <span class="keyword">continue</span>;
+
+        <span class="keyword">if</span> (textFeatures[k]) {
+            shapedText = shapeText(textFeatures[k], stacks[fontstack], maxWidth,
+                    lineHeight, horizontalAlign, verticalAlign, justify, spacing, textOffset);
+        } <span class="keyword">else</span> {
+            shapedText = <span class="literal">null</span>;
+        }
+
+        <span class="keyword">if</span> (layout[<span class="string">'icon-image'</span>]) {
+            <span class="keyword">var</span> iconName = resolveTokens(features[k].properties, layout[<span class="string">'icon-image'</span>]);
+            <span class="keyword">var</span> image = icons[iconName];
+            shapedIcon = shapeIcon(image, layout);
+
+            <span class="keyword">if</span> (image) {
+                <span class="keyword">if</span> (<span class="keyword">this</span>.sdfIcons === <span class="literal">undefined</span>) {
+                    <span class="keyword">this</span>.sdfIcons = image.sdf;
+                } <span class="keyword">else</span> <span class="keyword">if</span> (<span class="keyword">this</span>.sdfIcons !== image.sdf) {
+                    console.warn(<span class="string">'Style sheet warning: Cannot mix SDF and non-SDF icons in one buffer'</span>);
+                }
+                <span class="keyword">if</span> (image.pixelRatio !== <span class="number">1</span>) {
+                    <span class="keyword">this</span>.iconsNeedLinear = <span class="literal">true</span>;
+                }
+            }
+        } <span class="keyword">else</span> {
+            shapedIcon = <span class="literal">null</span>;
+        }
+
+        <span class="keyword">if</span> (shapedText || shapedIcon) {
+            <span class="keyword">this</span>.addFeature(geometries[k], shapedText, shapedIcon, features[k].index);
+        }
+    }
+
+    <span class="keyword">this</span>.placeFeatures(collisionTile, <span class="keyword">this</span>.showCollisionBoxes);
+
+    <span class="keyword">this</span>.trimArrays();
+};
+
+SymbolBucket.prototype.addFeature = <span class="keyword">function</span>(lines, shapedText, shapedIcon, featureIndex) {
+    <span class="keyword">var</span> layout = <span class="keyword">this</span>.layer.layout;
+
+    <span class="keyword">var</span> glyphSize = <span class="number">24</span>;
+
+    <span class="keyword">var</span> fontScale = <span class="keyword">this</span>.adjustedTextSize / glyphSize,
+        textMaxSize = <span class="keyword">this</span>.adjustedTextMaxSize !== <span class="literal">undefined</span> ? <span class="keyword">this</span>.adjustedTextMaxSize : <span class="keyword">this</span>.adjustedTextSize,
+        textBoxScale = <span class="keyword">this</span>.tilePixelRatio * fontScale,
+        textMaxBoxScale = <span class="keyword">this</span>.tilePixelRatio * textMaxSize / glyphSize,
+        iconBoxScale = <span class="keyword">this</span>.tilePixelRatio * <span class="keyword">this</span>.adjustedIconSize,
+        symbolMinDistance = <span class="keyword">this</span>.tilePixelRatio * layout[<span class="string">'symbol-spacing'</span>],
+        avoidEdges = layout[<span class="string">'symbol-avoid-edges'</span>],
+        textPadding = layout[<span class="string">'text-padding'</span>] * <span class="keyword">this</span>.tilePixelRatio,
+        iconPadding = layout[<span class="string">'icon-padding'</span>] * <span class="keyword">this</span>.tilePixelRatio,
+        textMaxAngle = layout[<span class="string">'text-max-angle'</span>] / <span class="number">180</span> * Math.PI,
+        textAlongLine = layout[<span class="string">'text-rotation-alignment'</span>] === <span class="string">'map'</span> &amp;&amp; layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>,
+        iconAlongLine = layout[<span class="string">'icon-rotation-alignment'</span>] === <span class="string">'map'</span> &amp;&amp; layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>,
+        mayOverlap = layout[<span class="string">'text-allow-overlap'</span>] || layout[<span class="string">'icon-allow-overlap'</span>] ||
+            layout[<span class="string">'text-ignore-placement'</span>] || layout[<span class="string">'icon-ignore-placement'</span>],
+        isLine = layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>,
+        textRepeatDistance = symbolMinDistance / <span class="number">2</span>;
+
+    <span class="keyword">if</span> (isLine) {
+        lines = clipLine(lines, <span class="number">0</span>, <span class="number">0</span>, EXTENT, EXTENT);
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; lines.length; i++) {
+        <span class="keyword">var</span> line = lines[i];
+
+        <span class="comment">// Calculate the anchor points around which you want to place labels</span>
+        <span class="keyword">var</span> anchors;
+        <span class="keyword">if</span> (isLine) {
+            anchors = getAnchors(
+                line,
+                symbolMinDistance,
+                textMaxAngle,
+                shapedText,
+                shapedIcon,
+                glyphSize,
+                textMaxBoxScale,
+                <span class="keyword">this</span>.overscaling,
+                EXTENT
+            );
+        } <span class="keyword">else</span> {
+            anchors = [ <span class="keyword">new</span> Anchor(line[<span class="number">0</span>].x, line[<span class="number">0</span>].y, <span class="number">0</span>) ];
+        }
+
+        <span class="comment">// For each potential label, create the placement features used to check for collisions, and the quads use for rendering.</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>, len = anchors.length; j &lt; len; j++) {
+            <span class="keyword">var</span> anchor = anchors[j];
+
+            <span class="keyword">if</span> (shapedText &amp;&amp; isLine) {
+                <span class="keyword">if</span> (<span class="keyword">this</span>.anchorIsTooClose(shapedText.text, textRepeatDistance, anchor)) {
+                    <span class="keyword">continue</span>;
+                }
+            }
+
+            <span class="keyword">var</span> inside = !(anchor.x &lt; <span class="number">0</span> || anchor.x > EXTENT || anchor.y &lt; <span class="number">0</span> || anchor.y > EXTENT);
+
+            <span class="keyword">if</span> (avoidEdges &amp;&amp; !inside) <span class="keyword">continue</span>;
+
+            <span class="comment">// Normally symbol layers are drawn across tile boundaries. Only symbols</span>
+            <span class="comment">// with their anchors within the tile boundaries are added to the buffers</span>
+            <span class="comment">// to prevent symbols from being drawn twice.</span>
+            <span class="comment">//</span>
+            <span class="comment">// Symbols in layers with overlap are sorted in the y direction so that</span>
+            <span class="comment">// symbols lower on the canvas are drawn on top of symbols near the top.</span>
+            <span class="comment">// To preserve this order across tile boundaries these symbols can't</span>
+            <span class="comment">// be drawn across tile boundaries. Instead they need to be included in</span>
+            <span class="comment">// the buffers for both tiles and clipped to tile boundaries at draw time.</span>
+            <span class="keyword">var</span> addToBuffers = inside || mayOverlap;
+
+            <span class="keyword">this</span>.symbolInstances.push(<span class="keyword">new</span> SymbolInstance(anchor, line, shapedText, shapedIcon, layout,
+                        addToBuffers, <span class="keyword">this</span>.symbolInstances.length, <span class="keyword">this</span>.collisionBoxArray, featureIndex, <span class="keyword">this</span>.sourceLayerIndex, <span class="keyword">this</span>.index,
+                        textBoxScale, textPadding, textAlongLine,
+                        iconBoxScale, iconPadding, iconAlongLine));
+        }
+    }
+};
+
+SymbolBucket.prototype.anchorIsTooClose = <span class="keyword">function</span>(text, repeatDistance, anchor) {
+    <span class="keyword">var</span> compareText = <span class="keyword">this</span>.compareText;
+    <span class="keyword">if</span> (!(text <span class="keyword">in</span> compareText)) {
+        compareText[text] = [];
+    } <span class="keyword">else</span> {
+        <span class="keyword">var</span> otherAnchors = compareText[text];
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = otherAnchors.length - <span class="number">1</span>; k >= <span class="number">0</span>; k--) {
+            <span class="keyword">if</span> (anchor.dist(otherAnchors[k]) &lt; repeatDistance) {
+                <span class="comment">// If it's within repeatDistance of one anchor, stop looking</span>
+                <span class="keyword">return</span> <span class="literal">true</span>;
+            }
+        }
+    }
+    <span class="comment">// If anchor is not within repeatDistance of any other anchor, add to array</span>
+    compareText[text].push(anchor);
+    <span class="keyword">return</span> <span class="literal">false</span>;
+};
+
+SymbolBucket.prototype.placeFeatures = <span class="keyword">function</span>(collisionTile, showCollisionBoxes) {
+    <span class="keyword">this</span>.recalculateStyleLayers();
+
+    <span class="comment">// Calculate which labels can be shown and when they can be shown and</span>
+    <span class="comment">// create the bufers used for rendering.</span>
+
+    <span class="keyword">this</span>.createArrays();
+
+    <span class="keyword">var</span> layout = <span class="keyword">this</span>.layer.layout;
+
+    <span class="keyword">var</span> maxScale = collisionTile.maxScale;
+
+    <span class="keyword">var</span> textAlongLine = layout[<span class="string">'text-rotation-alignment'</span>] === <span class="string">'map'</span> &amp;&amp; layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>;
+    <span class="keyword">var</span> iconAlongLine = layout[<span class="string">'icon-rotation-alignment'</span>] === <span class="string">'map'</span> &amp;&amp; layout[<span class="string">'symbol-placement'</span>] === <span class="string">'line'</span>;
+
+    <span class="keyword">var</span> mayOverlap = layout[<span class="string">'text-allow-overlap'</span>] || layout[<span class="string">'icon-allow-overlap'</span>] ||
+        layout[<span class="string">'text-ignore-placement'</span>] || layout[<span class="string">'icon-ignore-placement'</span>];
+
+    <span class="comment">// Sort symbols by their y position on the canvas so that they lower symbols</span>
+    <span class="comment">// are drawn on top of higher symbols.</span>
+    <span class="comment">// Don't sort symbols that won't overlap because it isn't necessary and</span>
+    <span class="comment">// because it causes more labels to pop in and out when rotating.</span>
+    <span class="keyword">if</span> (mayOverlap) {
+        <span class="keyword">var</span> angle = collisionTile.angle;
+        <span class="keyword">var</span> sin = Math.sin(angle),
+            cos = Math.cos(angle);
+
+        <span class="keyword">this</span>.symbolInstances.sort(<span class="keyword">function</span>(a, b) {
+            <span class="keyword">var</span> aRotated = (sin * a.x + cos * a.y) | <span class="number">0</span>;
+            <span class="keyword">var</span> bRotated = (sin * b.x + cos * b.y) | <span class="number">0</span>;
+            <span class="keyword">return</span> (aRotated - bRotated) || (b.index - a.index);
+        });
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> p = <span class="number">0</span>; p &lt; <span class="keyword">this</span>.symbolInstances.length; p++) {
+        <span class="keyword">var</span> symbolInstance = <span class="keyword">this</span>.symbolInstances[p];
+        <span class="keyword">var</span> hasText = symbolInstance.hasText;
+        <span class="keyword">var</span> hasIcon = symbolInstance.hasIcon;
+
+        <span class="keyword">var</span> iconWithoutText = layout[<span class="string">'text-optional'</span>] || !hasText,
+            textWithoutIcon = layout[<span class="string">'icon-optional'</span>] || !hasIcon;
+
+
+        <span class="comment">// Calculate the scales at which the text and icon can be placed without collision.</span>
+
+        <span class="keyword">var</span> glyphScale = hasText ?
+            collisionTile.placeCollisionFeature(symbolInstance.textCollisionFeature,
+                    layout[<span class="string">'text-allow-overlap'</span>], layout[<span class="string">'symbol-avoid-edges'</span>]) :
+            collisionTile.minScale;
+
+        <span class="keyword">var</span> iconScale = hasIcon ?
+            collisionTile.placeCollisionFeature(symbolInstance.iconCollisionFeature,
+                    layout[<span class="string">'icon-allow-overlap'</span>], layout[<span class="string">'symbol-avoid-edges'</span>]) :
+            collisionTile.minScale;
+
+
+        <span class="comment">// Combine the scales for icons and text.</span>
+
+        <span class="keyword">if</span> (!iconWithoutText &amp;&amp; !textWithoutIcon) {
+            iconScale = glyphScale = Math.max(iconScale, glyphScale);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (!textWithoutIcon &amp;&amp; glyphScale) {
+            glyphScale = Math.max(iconScale, glyphScale);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (!iconWithoutText &amp;&amp; iconScale) {
+            iconScale = Math.max(iconScale, glyphScale);
+        }
+
+
+        <span class="comment">// Insert final placement into collision tree and add glyphs/icons to buffers</span>
+
+        <span class="keyword">if</span> (hasText) {
+            collisionTile.insertCollisionFeature(symbolInstance.textCollisionFeature, glyphScale, layout[<span class="string">'text-ignore-placement'</span>]);
+            <span class="keyword">if</span> (glyphScale &lt;= maxScale) {
+                <span class="keyword">this</span>.addSymbols(<span class="string">'glyph'</span>, symbolInstance.glyphQuads, glyphScale, layout[<span class="string">'text-keep-upright'</span>], textAlongLine, collisionTile.angle);
+            }
+        }
+
+        <span class="keyword">if</span> (hasIcon) {
+            collisionTile.insertCollisionFeature(symbolInstance.iconCollisionFeature, iconScale, layout[<span class="string">'icon-ignore-placement'</span>]);
+            <span class="keyword">if</span> (iconScale &lt;= maxScale) {
+                <span class="keyword">this</span>.addSymbols(<span class="string">'icon'</span>, symbolInstance.iconQuads, iconScale, layout[<span class="string">'icon-keep-upright'</span>], iconAlongLine, collisionTile.angle);
+            }
+        }
+
+    }
+
+    <span class="keyword">if</span> (showCollisionBoxes) <span class="keyword">this</span>.addToDebugBuffers(collisionTile);
+};
+
+SymbolBucket.prototype.addSymbols = <span class="keyword">function</span>(programName, quads, scale, keepUpright, alongLine, placementAngle) {
+
+    <span class="keyword">var</span> group = <span class="keyword">this</span>.makeRoomFor(programName, <span class="number">4</span> * quads.length);
+
+    <span class="keyword">var</span> elementArray = group.layout.element;
+    <span class="keyword">var</span> vertexArray = group.layout.vertex;
+
+    <span class="keyword">var</span> zoom = <span class="keyword">this</span>.zoom;
+    <span class="keyword">var</span> placementZoom = Math.max(Math.log(scale) / Math.LN2 + zoom, <span class="number">0</span>);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; quads.length; k++) {
+
+        <span class="keyword">var</span> symbol = quads[k],
+            angle = symbol.angle;
+
+        <span class="comment">// drop upside down versions of glyphs</span>
+        <span class="keyword">var</span> a = (angle + placementAngle + Math.PI) % (Math.PI * <span class="number">2</span>);
+        <span class="keyword">if</span> (keepUpright &amp;&amp; alongLine &amp;&amp; (a &lt;= Math.PI / <span class="number">2</span> || a > Math.PI * <span class="number">3</span> / <span class="number">2</span>)) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> tl = symbol.tl,
+            tr = symbol.tr,
+            bl = symbol.bl,
+            br = symbol.br,
+            tex = symbol.tex,
+            anchorPoint = symbol.anchorPoint,
+
+            minZoom = Math.max(zoom + Math.log(symbol.minScale) / Math.LN2, placementZoom),
+            maxZoom = Math.min(zoom + Math.log(symbol.maxScale) / Math.LN2, <span class="number">25</span>);
+
+        <span class="keyword">if</span> (maxZoom &lt;= minZoom) <span class="keyword">continue</span>;
+
+        <span class="comment">// Lower min zoom so that while fading out the label it can be shown outside of collision-free zoom levels</span>
+        <span class="keyword">if</span> (minZoom === placementZoom) minZoom = <span class="number">0</span>;
+
+        <span class="keyword">var</span> index = addVertex(vertexArray, anchorPoint.x, anchorPoint.y, tl.x, tl.y, tex.x, tex.y, minZoom, maxZoom, placementZoom);
+        addVertex(vertexArray, anchorPoint.x, anchorPoint.y, tr.x, tr.y, tex.x + tex.w, tex.y, minZoom, maxZoom, placementZoom);
+        addVertex(vertexArray, anchorPoint.x, anchorPoint.y, bl.x, bl.y, tex.x, tex.y + tex.h, minZoom, maxZoom, placementZoom);
+        addVertex(vertexArray, anchorPoint.x, anchorPoint.y, br.x, br.y, tex.x + tex.w, tex.y + tex.h, minZoom, maxZoom, placementZoom);
+
+        elementArray.emplaceBack(index, index + <span class="number">1</span>, index + <span class="number">2</span>);
+        elementArray.emplaceBack(index + <span class="number">1</span>, index + <span class="number">2</span>, index + <span class="number">3</span>);
+    }
+
+};
+
+SymbolBucket.prototype.updateIcons = <span class="keyword">function</span>(icons) {
+    <span class="keyword">this</span>.recalculateStyleLayers();
+    <span class="keyword">var</span> iconValue = <span class="keyword">this</span>.layer.layout[<span class="string">'icon-image'</span>];
+    <span class="keyword">if</span> (!iconValue) <span class="keyword">return</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.features.length; i++) {
+        <span class="keyword">var</span> iconName = resolveTokens(<span class="keyword">this</span>.features[i].properties, iconValue);
+        <span class="keyword">if</span> (iconName)
+            icons[iconName] = <span class="literal">true</span>;
+    }
+};
+
+SymbolBucket.prototype.updateFont = <span class="keyword">function</span>(stacks) {
+    <span class="keyword">this</span>.recalculateStyleLayers();
+    <span class="keyword">var</span> fontName = <span class="keyword">this</span>.layer.layout[<span class="string">'text-font'</span>],
+        stack = stacks[fontName] = stacks[fontName] || {};
+
+    <span class="keyword">this</span>.textFeatures = resolveText(<span class="keyword">this</span>.features, <span class="keyword">this</span>.layer.layout, stack);
+};
+
+SymbolBucket.prototype.addToDebugBuffers = <span class="keyword">function</span>(collisionTile) {
+    <span class="keyword">var</span> group = <span class="keyword">this</span>.makeRoomFor(<span class="string">'collisionBox'</span>, <span class="number">0</span>);
+    <span class="keyword">var</span> vertexArray = group.layout.vertex;
+    <span class="keyword">var</span> angle = -collisionTile.angle;
+    <span class="keyword">var</span> yStretch = collisionTile.yStretch;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; <span class="keyword">this</span>.symbolInstances.length; j++) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="number">2</span>; i++) {
+            <span class="keyword">var</span> feature = <span class="keyword">this</span>.symbolInstances[j][i === <span class="number">0</span> ? <span class="string">'textCollisionFeature'</span> : <span class="string">'iconCollisionFeature'</span>];
+            <span class="keyword">if</span> (!feature) <span class="keyword">continue</span>;
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> b = feature.boxStartIndex; b &lt; feature.boxEndIndex; b++) {
+                <span class="keyword">var</span> box = <span class="keyword">this</span>.collisionBoxArray.get(b);
+                <span class="keyword">var</span> anchorPoint = box.anchorPoint;
+
+                <span class="keyword">var</span> tl = <span class="keyword">new</span> Point(box.x1, box.y1 * yStretch)._rotate(angle);
+                <span class="keyword">var</span> tr = <span class="keyword">new</span> Point(box.x2, box.y1 * yStretch)._rotate(angle);
+                <span class="keyword">var</span> bl = <span class="keyword">new</span> Point(box.x1, box.y2 * yStretch)._rotate(angle);
+                <span class="keyword">var</span> br = <span class="keyword">new</span> Point(box.x2, box.y2 * yStretch)._rotate(angle);
+
+                <span class="keyword">var</span> maxZoom = Math.max(<span class="number">0</span>, Math.min(<span class="number">25</span>, <span class="keyword">this</span>.zoom + Math.log(box.maxScale) / Math.LN2));
+                <span class="keyword">var</span> placementZoom = Math.max(<span class="number">0</span>, Math.min(<span class="number">25</span>, <span class="keyword">this</span>.zoom + Math.log(box.placementScale) / Math.LN2));
+
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, tl, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, tr, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, tr, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, br, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, br, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, bl, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, bl, maxZoom, placementZoom);
+                <span class="keyword">this</span>.addCollisionBoxVertex(vertexArray, anchorPoint, tl, maxZoom, placementZoom);
+            }
+        }
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">SymbolInstance</span><span class="params">(anchor, line, shapedText, shapedIcon, layout, addToBuffers, index, collisionBoxArray, featureIndex, sourceLayerIndex, bucketIndex,
+                        textBoxScale, textPadding, textAlongLine,
+                        iconBoxScale, iconPadding, iconAlongLine)</span> {</span>
+
+    <span class="keyword">this</span>.x = anchor.x;
+    <span class="keyword">this</span>.y = anchor.y;
+    <span class="keyword">this</span>.index = index;
+    <span class="keyword">this</span>.hasText = !!shapedText;
+    <span class="keyword">this</span>.hasIcon = !!shapedIcon;
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.hasText) {
+        <span class="keyword">this</span>.glyphQuads = addToBuffers ? getGlyphQuads(anchor, shapedText, textBoxScale, line, layout, textAlongLine) : [];
+        <span class="keyword">this</span>.textCollisionFeature = <span class="keyword">new</span> CollisionFeature(collisionBoxArray, line, anchor, featureIndex, sourceLayerIndex, bucketIndex,
+                shapedText, textBoxScale, textPadding, textAlongLine, <span class="literal">false</span>);
+    }
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.hasIcon) {
+        <span class="keyword">this</span>.iconQuads = addToBuffers ? getIconQuads(anchor, shapedIcon, iconBoxScale, line, layout, iconAlongLine) : [];
+        <span class="keyword">this</span>.iconCollisionFeature = <span class="keyword">new</span> CollisionFeature(collisionBoxArray, line, anchor, featureIndex, sourceLayerIndex, bucketIndex,
+                shapedIcon, iconBoxScale, iconPadding, iconAlongLine, <span class="literal">true</span>);
+    }
+}
+</code></pre>

@@ -1,0 +1,35 @@
+<h1>draw_collision_debug.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = drawCollisionDebug;
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawCollisionDebug</span><span class="params">(painter, source, layer, coords)</span> {</span>
+    <span class="keyword">var</span> gl = painter.gl;
+    gl.enable(gl.STENCIL_TEST);
+    <span class="keyword">var</span> program = painter.useProgram(<span class="string">'collisionbox'</span>);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        <span class="keyword">var</span> coord = coords[i];
+        <span class="keyword">var</span> tile = source.getTile(coord);
+        <span class="keyword">var</span> bucket = tile.getBucket(layer);
+        <span class="keyword">if</span> (!bucket) <span class="keyword">continue</span>;
+        <span class="keyword">var</span> bufferGroups = bucket.bufferGroups.collisionBox;
+
+        <span class="keyword">if</span> (!bufferGroups || !bufferGroups.length) <span class="keyword">continue</span>;
+        <span class="keyword">var</span> group = bufferGroups[<span class="number">0</span>];
+        <span class="keyword">if</span> (group.layout.vertex.length === <span class="number">0</span>) <span class="keyword">continue</span>;
+
+        gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, coord.posMatrix);
+
+        painter.enableTileClippingMask(coord);
+
+        painter.lineWidth(<span class="number">1</span>);
+        gl.uniform1f(program.u_scale, Math.pow(<span class="number">2</span>, painter.transform.zoom - tile.coord.z));
+        gl.uniform1f(program.u_zoom, painter.transform.zoom * <span class="number">10</span>);
+        gl.uniform1f(program.u_maxzoom, (tile.coord.z + <span class="number">1</span>) * <span class="number">10</span>);
+
+        group.vaos[layer.id].bind(gl, program, group.layout.vertex);
+        gl.drawArrays(gl.LINES, <span class="number">0</span>, group.layout.vertex.length);
+    }
+}
+</code></pre>

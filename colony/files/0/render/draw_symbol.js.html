@@ -1,0 +1,212 @@
+<h1>draw_symbol.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> drawCollisionDebug = require(<span class="string">'./draw_collision_debug'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> pixelsToTileUnits = require(<span class="string">'../source/pixels_to_tile_units'</span>);
+
+
+module.exports = drawSymbols;
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawSymbols</span><span class="params">(painter, source, layer, coords)</span> {</span>
+    <span class="keyword">if</span> (painter.isOpaquePass) <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> drawAcrossEdges = !(layer.layout[<span class="string">'text-allow-overlap'</span>] || layer.layout[<span class="string">'icon-allow-overlap'</span>] ||
+        layer.layout[<span class="string">'text-ignore-placement'</span>] || layer.layout[<span class="string">'icon-ignore-placement'</span>]);
+
+    <span class="keyword">var</span> gl = painter.gl;
+
+    <span class="comment">// Disable the stencil test so that labels aren't clipped to tile boundaries.</span>
+    <span class="comment">//</span>
+    <span class="comment">// Layers with features that may be drawn overlapping aren't clipped. These</span>
+    <span class="comment">// layers are sorted in the y direction, and to draw the correct ordering near</span>
+    <span class="comment">// tile edges the icons are included in both tiles and clipped when drawing.</span>
+    <span class="keyword">if</span> (drawAcrossEdges) {
+        gl.disable(gl.STENCIL_TEST);
+    } <span class="keyword">else</span> {
+        gl.enable(gl.STENCIL_TEST);
+    }
+
+    painter.setDepthSublayer(<span class="number">0</span>);
+    painter.depthMask(<span class="literal">false</span>);
+    gl.disable(gl.DEPTH_TEST);
+
+    drawLayerSymbols(painter, source, layer, coords, <span class="literal">false</span>,
+            layer.paint[<span class="string">'icon-translate'</span>],
+            layer.paint[<span class="string">'icon-translate-anchor'</span>],
+            layer.layout[<span class="string">'icon-rotation-alignment'</span>],
+            layer.layout[<span class="string">'icon-size'</span>],
+            layer.paint[<span class="string">'icon-halo-width'</span>],
+            layer.paint[<span class="string">'icon-halo-color'</span>],
+            layer.paint[<span class="string">'icon-halo-blur'</span>],
+            layer.paint[<span class="string">'icon-opacity'</span>],
+            layer.paint[<span class="string">'icon-color'</span>]);
+
+    drawLayerSymbols(painter, source, layer, coords, <span class="literal">true</span>,
+            layer.paint[<span class="string">'text-translate'</span>],
+            layer.paint[<span class="string">'text-translate-anchor'</span>],
+            layer.layout[<span class="string">'text-rotation-alignment'</span>],
+            layer.layout[<span class="string">'text-size'</span>],
+            layer.paint[<span class="string">'text-halo-width'</span>],
+            layer.paint[<span class="string">'text-halo-color'</span>],
+            layer.paint[<span class="string">'text-halo-blur'</span>],
+            layer.paint[<span class="string">'text-opacity'</span>],
+            layer.paint[<span class="string">'text-color'</span>]);
+
+    gl.enable(gl.DEPTH_TEST);
+
+    drawCollisionDebug(painter, source, layer, coords);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawLayerSymbols</span><span class="params">(painter, source, layer, coords, isText,
+        translate,
+        translateAnchor,
+        rotationAlignment,
+        size,
+        haloWidth,
+        haloColor,
+        haloBlur,
+        opacity,
+        color)</span> {</span>
+
+    haloColor = util.premultiply(haloColor);
+    color = util.premultiply(color);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; coords.length; j++) {
+        <span class="keyword">var</span> tile = source.getTile(coords[j]);
+        <span class="keyword">var</span> bucket = tile.getBucket(layer);
+        <span class="keyword">if</span> (!bucket) <span class="keyword">continue</span>;
+        <span class="keyword">var</span> bothBufferGroups = bucket.bufferGroups;
+        <span class="keyword">var</span> bufferGroups = isText ? bothBufferGroups.glyph : bothBufferGroups.icon;
+        <span class="keyword">if</span> (!bufferGroups.length) <span class="keyword">continue</span>;
+
+        painter.enableTileClippingMask(coords[j]);
+        drawSymbol(painter, layer, coords[j].posMatrix, tile, bucket, bufferGroups, isText,
+                isText || bucket.sdfIcons, !isText &amp;&amp; bucket.iconsNeedLinear,
+                isText ? bucket.adjustedTextSize : bucket.adjustedIconSize, bucket.fontstack,
+                translate,
+                translateAnchor,
+                rotationAlignment,
+                size,
+                haloWidth,
+                haloColor,
+                haloBlur,
+                opacity,
+                color);
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawSymbol</span><span class="params">(painter, layer, posMatrix, tile, bucket, bufferGroups, isText, sdf, iconsNeedLinear, adjustedSize, fontstack,
+        translate,
+        translateAnchor,
+        rotationAlignment,
+        size,
+        haloWidth,
+        haloColor,
+        haloBlur,
+        opacity,
+        color)</span> {</span>
+    <span class="keyword">var</span> gl = painter.gl;
+    <span class="keyword">var</span> tr = painter.transform;
+    <span class="keyword">var</span> alignedWithMap = rotationAlignment === <span class="string">'map'</span>;
+
+    <span class="keyword">var</span> defaultSize = isText ? <span class="number">24</span> : <span class="number">1</span>;
+    <span class="keyword">var</span> fontScale = size / defaultSize;
+
+    <span class="keyword">var</span> extrudeScale, s, gammaScale;
+    <span class="keyword">if</span> (alignedWithMap) {
+        s = pixelsToTileUnits(tile, <span class="number">1</span>, painter.transform.zoom) * fontScale;
+        gammaScale = <span class="number">1</span> / Math.cos(tr._pitch);
+        extrudeScale = [s, s];
+    } <span class="keyword">else</span> {
+        s = painter.transform.altitude * fontScale;
+        gammaScale = <span class="number">1</span>;
+        extrudeScale = [ tr.pixelsToGLUnits[<span class="number">0</span>] * s, tr.pixelsToGLUnits[<span class="number">1</span>] * s];
+    }
+
+    <span class="comment">// calculate how much longer the real world distance is at the top of the screen</span>
+    <span class="comment">// than at the middle of the screen.</span>
+    <span class="keyword">var</span> topedgelength = Math.sqrt(tr.height * tr.height / <span class="number">4</span>  * (<span class="number">1</span> + tr.altitude * tr.altitude));
+    <span class="keyword">var</span> x = tr.height / <span class="number">2</span> * Math.tan(tr._pitch);
+    <span class="keyword">var</span> extra = (topedgelength + x) / topedgelength - <span class="number">1</span>;
+
+    <span class="keyword">if</span> (!isText &amp;&amp; !painter.style.sprite.loaded())
+        <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> program = painter.useProgram(sdf ? <span class="string">'sdf'</span> : <span class="string">'icon'</span>);
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, painter.translatePosMatrix(posMatrix, tile, translate, translateAnchor));
+    gl.uniform1i(program.u_skewed, alignedWithMap);
+    gl.uniform1f(program.u_extra, extra);
+    gl.uniform2fv(program.u_extrude_scale, extrudeScale);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(program.u_texture, <span class="number">0</span>);
+
+    <span class="keyword">if</span> (isText) {
+        <span class="comment">// use the fonstack used when parsing the tile, not the fontstack</span>
+        <span class="comment">// at the current zoom level (layout['text-font']).</span>
+        <span class="keyword">var</span> glyphAtlas = fontstack &amp;&amp; painter.glyphSource.getGlyphAtlas(fontstack);
+        <span class="keyword">if</span> (!glyphAtlas) <span class="keyword">return</span>;
+
+        glyphAtlas.updateTexture(gl);
+        gl.uniform2f(program.u_texsize, glyphAtlas.width / <span class="number">4</span>, glyphAtlas.height / <span class="number">4</span>);
+    } <span class="keyword">else</span> {
+        <span class="keyword">var</span> mapMoving = painter.options.rotating || painter.options.zooming;
+        <span class="keyword">var</span> iconScaled = fontScale !== <span class="number">1</span> || browser.devicePixelRatio !== painter.spriteAtlas.pixelRatio || iconsNeedLinear;
+        <span class="keyword">var</span> iconTransformed = alignedWithMap || painter.transform.pitch;
+        painter.spriteAtlas.bind(gl, sdf || mapMoving || iconScaled || iconTransformed);
+        gl.uniform2f(program.u_texsize, painter.spriteAtlas.width / <span class="number">4</span>, painter.spriteAtlas.height / <span class="number">4</span>);
+    }
+
+    <span class="comment">// adjust min/max zooms for variable font sizes</span>
+    <span class="keyword">var</span> zoomAdjust = Math.log(size / adjustedSize) / Math.LN2 || <span class="number">0</span>;
+    gl.uniform1f(program.u_zoom, (painter.transform.zoom - zoomAdjust) * <span class="number">10</span>); <span class="comment">// current zoom level</span>
+
+    gl.activeTexture(gl.TEXTURE1);
+    painter.frameHistory.bind(gl);
+    gl.uniform1i(program.u_fadetexture, <span class="number">1</span>);
+
+    <span class="keyword">var</span> group;
+
+    <span class="keyword">if</span> (sdf) {
+        <span class="keyword">var</span> sdfPx = <span class="number">8</span>;
+        <span class="keyword">var</span> blurOffset = <span class="number">1.19</span>;
+        <span class="keyword">var</span> haloOffset = <span class="number">6</span>;
+        <span class="keyword">var</span> gamma = <span class="number">0.105</span> * defaultSize / size / browser.devicePixelRatio;
+
+        <span class="keyword">if</span> (haloWidth) {
+            <span class="comment">// Draw halo underneath the text.</span>
+            gl.uniform1f(program.u_gamma, (haloBlur * blurOffset / fontScale / sdfPx + gamma) * gammaScale);
+            gl.uniform4fv(program.u_color, haloColor);
+            gl.uniform1f(program.u_opacity, opacity);
+            gl.uniform1f(program.u_buffer, (haloOffset - haloWidth / fontScale) / sdfPx);
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; bufferGroups.length; j++) {
+                group = bufferGroups[j];
+                group.vaos[layer.id].bind(gl, program, group.layout.vertex, group.layout.element);
+                gl.drawElements(gl.TRIANGLES, group.layout.element.length * <span class="number">3</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+            }
+        }
+
+        gl.uniform1f(program.u_gamma, gamma * gammaScale);
+        gl.uniform4fv(program.u_color, color);
+        gl.uniform1f(program.u_opacity, opacity);
+        gl.uniform1f(program.u_buffer, (<span class="number">256</span> - <span class="number">64</span>) / <span class="number">256</span>);
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; bufferGroups.length; i++) {
+            group = bufferGroups[i];
+            group.vaos[layer.id].bind(gl, program, group.layout.vertex, group.layout.element);
+            gl.drawElements(gl.TRIANGLES, group.layout.element.length * <span class="number">3</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+        }
+
+    } <span class="keyword">else</span> {
+        gl.uniform1f(program.u_opacity, opacity);
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; bufferGroups.length; k++) {
+            group = bufferGroups[k];
+            group.vaos[layer.id].bind(gl, program, group.layout.vertex, group.layout.element);
+            gl.drawElements(gl.TRIANGLES, group.layout.element.length * <span class="number">3</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+        }
+    }
+}
+</code></pre>

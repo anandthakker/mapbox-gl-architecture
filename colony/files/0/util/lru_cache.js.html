@@ -1,0 +1,125 @@
+<h1>lru_cache.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = LRUCache;
+
+<span class="comment">/**
+ * A [least-recently-used cache](http://en.wikipedia.org/wiki/Cache_algorithms)
+ * with hash lookup made possible by keeping a list of keys in parallel to
+ * an array of dictionary of values
+ *
+ * @param {number} max number of permitted values
+ * @param {Function} onRemove callback called with items when they expire
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">LRUCache</span><span class="params">(max, onRemove)</span> {</span>
+    <span class="keyword">this</span>.max = max;
+    <span class="keyword">this</span>.onRemove = onRemove;
+    <span class="keyword">this</span>.reset();
+}
+
+<span class="comment">/**
+ * Clear the cache
+ *
+ * @returns {LRUCache} this cache
+ * @private
+ */</span>
+LRUCache.prototype.reset = <span class="keyword">function</span>() {
+    <span class="keyword">for</span> (<span class="keyword">var</span> key <span class="keyword">in</span> <span class="keyword">this</span>.data) {
+        <span class="keyword">this</span>.onRemove(<span class="keyword">this</span>.data[key]);
+    }
+
+    <span class="keyword">this</span>.data = {};
+    <span class="keyword">this</span>.order = [];
+
+    <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+
+<span class="comment">/**
+ * Add a key, value combination to the cache, trimming its size if this pushes
+ * it over max length.
+ *
+ * @param {string} key lookup key for the item
+ * @param {*} data any value
+ *
+ * @returns {LRUCache} this cache
+ * @private
+ */</span>
+LRUCache.prototype.add = <span class="keyword">function</span>(key, data) {
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.has(key)) {
+        <span class="keyword">this</span>.order.splice(<span class="keyword">this</span>.order.indexOf(key), <span class="number">1</span>);
+        <span class="keyword">this</span>.data[key] = data;
+        <span class="keyword">this</span>.order.push(key);
+
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.data[key] = data;
+        <span class="keyword">this</span>.order.push(key);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.order.length > <span class="keyword">this</span>.max) {
+            <span class="keyword">var</span> removedData = <span class="keyword">this</span>.get(<span class="keyword">this</span>.order[<span class="number">0</span>]);
+            <span class="keyword">if</span> (removedData) <span class="keyword">this</span>.onRemove(removedData);
+        }
+    }
+
+    <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+
+<span class="comment">/**
+ * Determine whether the value attached to `key` is present
+ *
+ * @param {string} key the key to be looked-up
+ * @returns {boolean} whether the cache has this value
+ * @private
+ */</span>
+LRUCache.prototype.has = <span class="keyword">function</span>(key) {
+    <span class="keyword">return</span> key <span class="keyword">in</span> <span class="keyword">this</span>.data;
+};
+
+<span class="comment">/**
+ * List all keys in the cache
+ *
+ * @returns {Array&lt;string>} an array of keys in this cache.
+ * @private
+ */</span>
+LRUCache.prototype.keys = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">this</span>.order;
+};
+
+<span class="comment">/**
+ * Get the value attached to a specific key. If the key is not found,
+ * returns `null`
+ *
+ * @param {string} key the key to look up
+ * @returns {*} the data, or null if it isn't found
+ * @private
+ */</span>
+LRUCache.prototype.get = <span class="keyword">function</span>(key) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.has(key)) { <span class="keyword">return</span> <span class="literal">null</span>; }
+
+    <span class="keyword">var</span> data = <span class="keyword">this</span>.data[key];
+
+    <span class="keyword">delete</span> <span class="keyword">this</span>.data[key];
+    <span class="keyword">this</span>.order.splice(<span class="keyword">this</span>.order.indexOf(key), <span class="number">1</span>);
+
+    <span class="keyword">return</span> data;
+};
+
+<span class="comment">/**
+ * Change the max size of the cache.
+ *
+ * @param {number} max the max size of the cache
+ * @returns {LRUCache} this cache
+ * @private
+ */</span>
+LRUCache.prototype.setMaxSize = <span class="keyword">function</span>(max) {
+    <span class="keyword">this</span>.max = max;
+
+    <span class="keyword">while</span> (<span class="keyword">this</span>.order.length > <span class="keyword">this</span>.max) {
+        <span class="keyword">var</span> removedData = <span class="keyword">this</span>.get(<span class="keyword">this</span>.order[<span class="number">0</span>]);
+        <span class="keyword">if</span> (removedData) <span class="keyword">this</span>.onRemove(removedData);
+    }
+
+    <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+</code></pre>

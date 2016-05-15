@@ -1,0 +1,67 @@
+<h1>webworkify</h1>
+<pre><code class="lang-js"><span class="keyword">var</span> bundleFn = arguments[<span class="number">3</span>];
+<span class="keyword">var</span> sources = arguments[<span class="number">4</span>];
+<span class="keyword">var</span> cache = arguments[<span class="number">5</span>];
+
+<span class="keyword">var</span> stringify = JSON.stringify;
+
+module.exports = <span class="function"><span class="keyword">function</span> <span class="params">(fn)</span> {</span>
+    <span class="keyword">var</span> keys = [];
+    <span class="keyword">var</span> wkey;
+    <span class="keyword">var</span> cacheKeys = Object.keys(cache);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>, l = cacheKeys.length; i &lt; l; i++) {
+        <span class="keyword">var</span> key = cacheKeys[i];
+        <span class="keyword">var</span> exp = cache[key].exports;
+        <span class="comment">// Using babel as a transpiler to use esmodule, the export will always</span>
+        <span class="comment">// be an object with the default export as a property of it. To ensure</span>
+        <span class="comment">// the existing api and babel esmodule exports are both supported we</span>
+        <span class="comment">// check for both</span>
+        <span class="keyword">if</span> (exp === fn || exp.<span class="keyword">default</span> === fn) {
+            wkey = key;
+            <span class="keyword">break</span>;
+        }
+    }
+
+    <span class="keyword">if</span> (!wkey) {
+        wkey = Math.floor(Math.pow(<span class="number">16</span>, <span class="number">8</span>) * Math.random()).toString(<span class="number">16</span>);
+        <span class="keyword">var</span> wcache = {};
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>, l = cacheKeys.length; i &lt; l; i++) {
+            <span class="keyword">var</span> key = cacheKeys[i];
+            wcache[key] = key;
+        }
+        sources[wkey] = [
+            Function([<span class="string">'require'</span>,<span class="string">'module'</span>,<span class="string">'exports'</span>], <span class="string">'('</span> + fn + <span class="string">')(self)'</span>),
+            wcache
+        ];
+    }
+    <span class="keyword">var</span> skey = Math.floor(Math.pow(<span class="number">16</span>, <span class="number">8</span>) * Math.random()).toString(<span class="number">16</span>);
+
+    <span class="keyword">var</span> scache = {}; scache[wkey] = wkey;
+    sources[skey] = [
+        Function([<span class="string">'require'</span>], (
+            <span class="comment">// try to call default if defined to also support babel esmodule</span>
+            <span class="comment">// exports</span>
+            <span class="string">'var f = require('</span> + stringify(wkey) + <span class="string">');'</span> +
+            <span class="string">'(f.default ? f.default : f)(self);'</span>
+        )),
+        scache
+    ];
+
+    <span class="keyword">var</span> src = <span class="string">'('</span> + bundleFn + <span class="string">')({'</span>
+        + Object.keys(sources).map(<span class="function"><span class="keyword">function</span> <span class="params">(key)</span> {</span>
+            <span class="keyword">return</span> stringify(key) + <span class="string">':['</span>
+                + sources[key][<span class="number">0</span>]
+                + <span class="string">','</span> + stringify(sources[key][<span class="number">1</span>]) + <span class="string">']'</span>
+            ;
+        }).join(<span class="string">','</span>)
+        + <span class="string">'},{},['</span> + stringify(skey) + <span class="string">'])'</span>
+    ;
+
+    <span class="keyword">var</span> URL = window.URL || window.webkitURL || window.mozURL || window.msURL;
+
+    <span class="keyword">return</span> <span class="keyword">new</span> Worker(URL.createObjectURL(
+        <span class="keyword">new</span> Blob([src], { type: <span class="string">'text/javascript'</span> })
+    ));
+};
+</code></pre>

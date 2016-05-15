@@ -1,0 +1,739 @@
+<h1>style.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> StyleLayer = require(<span class="string">'./style_layer'</span>);
+<span class="keyword">var</span> ImageSprite = require(<span class="string">'./image_sprite'</span>);
+<span class="keyword">var</span> GlyphSource = require(<span class="string">'../symbol/glyph_source'</span>);
+<span class="keyword">var</span> SpriteAtlas = require(<span class="string">'../symbol/sprite_atlas'</span>);
+<span class="keyword">var</span> LineAtlas = require(<span class="string">'../render/line_atlas'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeStyleURL;
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> Dispatcher = require(<span class="string">'../util/dispatcher'</span>);
+<span class="keyword">var</span> AnimationLoop = require(<span class="string">'./animation_loop'</span>);
+<span class="keyword">var</span> validateStyle = require(<span class="string">'./validate_style'</span>);
+<span class="keyword">var</span> Source = require(<span class="string">'../source/source'</span>);
+<span class="keyword">var</span> styleSpec = require(<span class="string">'./style_spec'</span>);
+<span class="keyword">var</span> StyleFunction = require(<span class="string">'./style_function'</span>);
+
+module.exports = Style;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Style</span><span class="params">(stylesheet, animationLoop)</span> {</span>
+    <span class="keyword">this</span>.animationLoop = animationLoop || <span class="keyword">new</span> AnimationLoop();
+    <span class="keyword">this</span>.dispatcher = <span class="keyword">new</span> Dispatcher(Math.max(browser.hardwareConcurrency - <span class="number">1</span>, <span class="number">1</span>), <span class="keyword">this</span>);
+    <span class="keyword">this</span>.spriteAtlas = <span class="keyword">new</span> SpriteAtlas(<span class="number">512</span>, <span class="number">512</span>);
+    <span class="keyword">this</span>.lineAtlas = <span class="keyword">new</span> LineAtlas(<span class="number">256</span>, <span class="number">512</span>);
+
+    <span class="keyword">this</span>._layers = {};
+    <span class="keyword">this</span>._order  = [];
+    <span class="keyword">this</span>._groups = [];
+    <span class="keyword">this</span>.sources = {};
+    <span class="keyword">this</span>.zoomHistory = {};
+
+    util.bindAll([
+        <span class="string">'_forwardSourceEvent'</span>,
+        <span class="string">'_forwardTileEvent'</span>,
+        <span class="string">'_forwardLayerEvent'</span>,
+        <span class="string">'_redoPlacement'</span>
+    ], <span class="keyword">this</span>);
+
+    <span class="keyword">this</span>._resetUpdates();
+
+    <span class="keyword">var</span> loaded = <span class="keyword">function</span>(err, stylesheet) {
+        <span class="keyword">if</span> (err) {
+            <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {error: err});
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">if</span> (validateStyle.emitErrors(<span class="keyword">this</span>, validateStyle(stylesheet))) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._loaded = <span class="literal">true</span>;
+        <span class="keyword">this</span>.stylesheet = stylesheet;
+
+        <span class="keyword">this</span>.updateClasses();
+
+        <span class="keyword">var</span> sources = stylesheet.sources;
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> sources) {
+            <span class="keyword">this</span>.addSource(id, sources[id]);
+        }
+
+        <span class="keyword">if</span> (stylesheet.sprite) {
+            <span class="keyword">this</span>.sprite = <span class="keyword">new</span> ImageSprite(stylesheet.sprite);
+            <span class="keyword">this</span>.sprite.on(<span class="string">'load'</span>, <span class="keyword">this</span>.fire.bind(<span class="keyword">this</span>, <span class="string">'change'</span>));
+        }
+
+        <span class="keyword">this</span>.glyphSource = <span class="keyword">new</span> GlyphSource(stylesheet.glyphs);
+        <span class="keyword">this</span>._resolve();
+        <span class="keyword">this</span>.fire(<span class="string">'load'</span>);
+    }.bind(<span class="keyword">this</span>);
+
+    <span class="keyword">if</span> (<span class="keyword">typeof</span> stylesheet === <span class="string">'string'</span>) {
+        ajax.getJSON(normalizeURL(stylesheet), loaded);
+    } <span class="keyword">else</span> {
+        browser.frame(loaded.bind(<span class="keyword">this</span>, <span class="literal">null</span>, stylesheet));
+    }
+
+    <span class="keyword">this</span>.on(<span class="string">'source.load'</span>, <span class="keyword">function</span>(event) {
+        <span class="keyword">var</span> source = event.source;
+        <span class="keyword">if</span> (source &amp;&amp; source.vectorLayerIds) {
+            <span class="keyword">for</span> (<span class="keyword">var</span> layerId <span class="keyword">in</span> <span class="keyword">this</span>._layers) {
+                <span class="keyword">var</span> layer = <span class="keyword">this</span>._layers[layerId];
+                <span class="keyword">if</span> (layer.source === source.id) {
+                    <span class="keyword">this</span>._validateLayer(layer);
+                }
+            }
+        }
+    });
+}
+
+Style.prototype = util.inherit(Evented, {
+    _loaded: <span class="literal">false</span>,
+
+    _validateLayer: <span class="keyword">function</span>(layer) {
+        <span class="keyword">var</span> source = <span class="keyword">this</span>.sources[layer.source];
+
+        <span class="keyword">if</span> (!layer.sourceLayer) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (!source) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (!source.vectorLayerIds) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (source.vectorLayerIds.indexOf(layer.sourceLayer) === -<span class="number">1</span>) {
+            <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {
+                error: <span class="keyword">new</span> Error(
+                    <span class="string">'Source layer "'</span> + layer.sourceLayer + <span class="string">'" '</span> +
+                    <span class="string">'does not exist on source "'</span> + source.id + <span class="string">'" '</span> +
+                    <span class="string">'as specified by style layer "'</span> + layer.id + <span class="string">'"'</span>
+                )
+            });
+        }
+    },
+
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._loaded)
+            <span class="keyword">return</span> <span class="literal">false</span>;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.sources)
+            <span class="keyword">if</span> (!<span class="keyword">this</span>.sources[id].loaded())
+                <span class="keyword">return</span> <span class="literal">false</span>;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.sprite &amp;&amp; !<span class="keyword">this</span>.sprite.loaded())
+            <span class="keyword">return</span> <span class="literal">false</span>;
+
+        <span class="keyword">return</span> <span class="literal">true</span>;
+    },
+
+    _resolve: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> layer, layerJSON;
+
+        <span class="keyword">this</span>._layers = {};
+        <span class="keyword">this</span>._order  = <span class="keyword">this</span>.stylesheet.layers.map(<span class="keyword">function</span>(layer) {
+            <span class="keyword">return</span> layer.id;
+        });
+
+        <span class="comment">// resolve all layers WITHOUT a ref</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.stylesheet.layers.length; i++) {
+            layerJSON = <span class="keyword">this</span>.stylesheet.layers[i];
+            <span class="keyword">if</span> (layerJSON.ref) <span class="keyword">continue</span>;
+            layer = StyleLayer.create(layerJSON);
+            <span class="keyword">this</span>._layers[layer.id] = layer;
+            layer.on(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardLayerEvent);
+        }
+
+        <span class="comment">// resolve all layers WITH a ref</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; <span class="keyword">this</span>.stylesheet.layers.length; j++) {
+            layerJSON = <span class="keyword">this</span>.stylesheet.layers[j];
+            <span class="keyword">if</span> (!layerJSON.ref) <span class="keyword">continue</span>;
+            <span class="keyword">var</span> refLayer = <span class="keyword">this</span>.getLayer(layerJSON.ref);
+            layer = StyleLayer.create(layerJSON, refLayer);
+            <span class="keyword">this</span>._layers[layer.id] = layer;
+            layer.on(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardLayerEvent);
+        }
+
+        <span class="keyword">this</span>._groupLayers();
+        <span class="keyword">this</span>._updateWorkerLayers();
+    },
+
+    _groupLayers: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> group;
+
+        <span class="keyword">this</span>._groups = [];
+
+        <span class="comment">// Split into groups of consecutive top-level layers with the same source.</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>._order.length; ++i) {
+            <span class="keyword">var</span> layer = <span class="keyword">this</span>._layers[<span class="keyword">this</span>._order[i]];
+
+            <span class="keyword">if</span> (!group || layer.source !== group.source) {
+                group = [];
+                group.source = layer.source;
+                <span class="keyword">this</span>._groups.push(group);
+            }
+
+            group.push(layer);
+        }
+    },
+
+    _updateWorkerLayers: <span class="keyword">function</span>(ids) {
+        <span class="keyword">this</span>.dispatcher.broadcast(ids ? <span class="string">'update layers'</span> : <span class="string">'set layers'</span>, <span class="keyword">this</span>._serializeLayers(ids));
+    },
+
+    _serializeLayers: <span class="keyword">function</span>(ids) {
+        ids = ids || <span class="keyword">this</span>._order;
+        <span class="keyword">var</span> serialized = [];
+        <span class="keyword">var</span> options = {includeRefProperties: <span class="literal">true</span>};
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ids.length; i++) {
+            serialized.push(<span class="keyword">this</span>._layers[ids[i]].serialize(options));
+        }
+        <span class="keyword">return</span> serialized;
+    },
+
+    _applyClasses: <span class="keyword">function</span>(classes, options) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._loaded) <span class="keyword">return</span>;
+
+        classes = classes || [];
+        options = options || {transition: <span class="literal">true</span>};
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>.stylesheet.transition || {};
+
+        <span class="keyword">var</span> layers = <span class="keyword">this</span>._updates.allPaintProps ? <span class="keyword">this</span>._layers : <span class="keyword">this</span>._updates.paintProps;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> layers) {
+            <span class="keyword">var</span> layer = <span class="keyword">this</span>._layers[id];
+            <span class="keyword">var</span> props = <span class="keyword">this</span>._updates.paintProps[id];
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>._updates.allPaintProps || props.all) {
+                layer.updatePaintTransitions(classes, options, transition, <span class="keyword">this</span>.animationLoop);
+            } <span class="keyword">else</span> {
+                <span class="keyword">for</span> (<span class="keyword">var</span> paintName <span class="keyword">in</span> props) {
+                    <span class="keyword">this</span>._layers[id].updatePaintTransition(paintName, classes, options, transition, <span class="keyword">this</span>.animationLoop);
+                }
+            }
+        }
+    },
+
+    _recalculate: <span class="keyword">function</span>(z) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> sourceId <span class="keyword">in</span> <span class="keyword">this</span>.sources)
+            <span class="keyword">this</span>.sources[sourceId].used = <span class="literal">false</span>;
+
+        <span class="keyword">this</span>._updateZoomHistory(z);
+
+        <span class="keyword">this</span>.rasterFadeDuration = <span class="number">300</span>;
+        <span class="keyword">for</span> (<span class="keyword">var</span> layerId <span class="keyword">in</span> <span class="keyword">this</span>._layers) {
+            <span class="keyword">var</span> layer = <span class="keyword">this</span>._layers[layerId];
+
+            layer.recalculate(z, <span class="keyword">this</span>.zoomHistory);
+            <span class="keyword">if</span> (!layer.isHidden(z) &amp;&amp; layer.source) {
+                <span class="keyword">this</span>.sources[layer.source].used = <span class="literal">true</span>;
+            }
+        }
+
+        <span class="keyword">var</span> maxZoomTransitionDuration = <span class="number">300</span>;
+        <span class="keyword">if</span> (Math.floor(<span class="keyword">this</span>.z) !== Math.floor(z)) {
+            <span class="keyword">this</span>.animationLoop.set(maxZoomTransitionDuration);
+        }
+
+        <span class="keyword">this</span>.z = z;
+        <span class="keyword">this</span>.fire(<span class="string">'zoom'</span>);
+    },
+
+    _updateZoomHistory: <span class="keyword">function</span>(z) {
+
+        <span class="keyword">var</span> zh = <span class="keyword">this</span>.zoomHistory;
+
+        <span class="keyword">if</span> (zh.lastIntegerZoom === <span class="literal">undefined</span>) {
+            <span class="comment">// first time</span>
+            zh.lastIntegerZoom = Math.floor(z);
+            zh.lastIntegerZoomTime = <span class="number">0</span>;
+            zh.lastZoom = z;
+        }
+
+        <span class="comment">// check whether an integer zoom level as passed since the last frame</span>
+        <span class="comment">// and if yes, record it with the time. Used for transitioning patterns.</span>
+        <span class="keyword">if</span> (Math.floor(zh.lastZoom) &lt; Math.floor(z)) {
+            zh.lastIntegerZoom = Math.floor(z);
+            zh.lastIntegerZoomTime = Date.now();
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (Math.floor(zh.lastZoom) > Math.floor(z)) {
+            zh.lastIntegerZoom = Math.floor(z + <span class="number">1</span>);
+            zh.lastIntegerZoomTime = Date.now();
+        }
+
+        zh.lastZoom = z;
+    },
+
+    _checkLoaded: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._loaded) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Style is not done loading'</span>);
+        }
+    },
+
+    <span class="comment">/**
+     * Apply queued style updates in a batch
+     * @private
+     */</span>
+    update: <span class="keyword">function</span>(classes, options) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._updates.changed) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._updates.allLayers) {
+            <span class="keyword">this</span>._groupLayers();
+            <span class="keyword">this</span>._updateWorkerLayers();
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> updatedIds = Object.keys(<span class="keyword">this</span>._updates.layers);
+            <span class="keyword">if</span> (updatedIds.length) {
+                <span class="keyword">this</span>._updateWorkerLayers(updatedIds);
+            }
+        }
+
+        <span class="keyword">var</span> updatedSourceIds = Object.keys(<span class="keyword">this</span>._updates.sources);
+        <span class="keyword">var</span> i;
+        <span class="keyword">for</span> (i = <span class="number">0</span>; i &lt; updatedSourceIds.length; i++) {
+            <span class="keyword">this</span>._reloadSource(updatedSourceIds[i]);
+        }
+
+        <span class="keyword">for</span> (i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>._updates.events.length; i++) {
+            <span class="keyword">var</span> args = <span class="keyword">this</span>._updates.events[i];
+            <span class="keyword">this</span>.fire(args[<span class="number">0</span>], args[<span class="number">1</span>]);
+        }
+
+        <span class="keyword">this</span>._applyClasses(classes, options);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._updates.changed) {
+            <span class="keyword">this</span>.fire(<span class="string">'change'</span>);
+        }
+
+        <span class="keyword">this</span>._resetUpdates();
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _resetUpdates: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._updates = {
+            events: [],
+            layers: {},
+            sources: {},
+            paintProps: {}
+        };
+    },
+
+    addSource: <span class="keyword">function</span>(id, source) {
+        <span class="keyword">this</span>._checkLoaded();
+        <span class="keyword">if</span> (<span class="keyword">this</span>.sources[id] !== <span class="literal">undefined</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'There is already a source with this ID'</span>);
+        }
+        <span class="keyword">if</span> (!Source.is(source) &amp;&amp; <span class="keyword">this</span>._handleErrors(validateStyle.source, <span class="string">'sources.'</span> + id, source)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        source = Source.create(source);
+        <span class="keyword">this</span>.sources[id] = source;
+        source.id = id;
+        source.style = <span class="keyword">this</span>;
+        source.dispatcher = <span class="keyword">this</span>.dispatcher;
+        source
+            .on(<span class="string">'load'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .on(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .on(<span class="string">'change'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .on(<span class="string">'tile.add'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.load'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.error'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.remove'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.stats'</span>, <span class="keyword">this</span>._forwardTileEvent);
+
+        <span class="keyword">this</span>._updates.events.push([<span class="string">'source.add'</span>, {source: source}]);
+        <span class="keyword">this</span>._updates.changed = <span class="literal">true</span>;
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Remove a source from this stylesheet, given its id.
+     * @param {string} id id of the source to remove
+     * @returns {Style} this style
+     * @throws {Error} if no source is found with the given ID
+     * @private
+     */</span>
+    removeSource: <span class="keyword">function</span>(id) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.sources[id] === <span class="literal">undefined</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'There is no source with this ID'</span>);
+        }
+        <span class="keyword">var</span> source = <span class="keyword">this</span>.sources[id];
+        <span class="keyword">delete</span> <span class="keyword">this</span>.sources[id];
+        source
+            .off(<span class="string">'load'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .off(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .off(<span class="string">'change'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .off(<span class="string">'tile.add'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .off(<span class="string">'tile.load'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .off(<span class="string">'tile.error'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .off(<span class="string">'tile.remove'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .off(<span class="string">'tile.stats'</span>, <span class="keyword">this</span>._forwardTileEvent);
+
+        <span class="keyword">this</span>._updates.events.push([<span class="string">'source.remove'</span>, {source: source}]);
+        <span class="keyword">this</span>._updates.changed = <span class="literal">true</span>;
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get a source by id.
+     * @param {string} id id of the desired source
+     * @returns {Object} source
+     * @private
+     */</span>
+    getSource: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.sources[id];
+    },
+
+    <span class="comment">/**
+     * Add a layer to the map style. The layer will be inserted before the layer with
+     * ID `before`, or appended if `before` is omitted.
+     * @param {StyleLayer|Object} layer
+     * @param {string=} before  ID of an existing layer to insert before
+     * @fires layer.add
+     * @returns {Style} `this`
+     * @private
+     */</span>
+    addLayer: <span class="keyword">function</span>(layer, before) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">if</span> (!(layer <span class="keyword">instanceof</span> StyleLayer)) {
+            <span class="comment">// this layer is not in the style.layers array, so we pass an impossible array index</span>
+            <span class="keyword">if</span> (<span class="keyword">this</span>._handleErrors(validateStyle.layer,
+                    <span class="string">'layers.'</span> + layer.id, layer, <span class="literal">false</span>, {arrayIndex: -<span class="number">1</span>})) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+            <span class="keyword">var</span> refLayer = layer.ref &amp;&amp; <span class="keyword">this</span>.getLayer(layer.ref);
+            layer = StyleLayer.create(layer, refLayer);
+        }
+        <span class="keyword">this</span>._validateLayer(layer);
+
+        layer.on(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardLayerEvent);
+
+        <span class="keyword">this</span>._layers[layer.id] = layer;
+        <span class="keyword">this</span>._order.splice(before ? <span class="keyword">this</span>._order.indexOf(before) : <span class="literal">Infinity</span>, <span class="number">0</span>, layer.id);
+
+        <span class="keyword">this</span>._updates.allLayers = <span class="literal">true</span>;
+        <span class="keyword">if</span> (layer.source) {
+            <span class="keyword">this</span>._updates.sources[layer.source] = <span class="literal">true</span>;
+        }
+        <span class="keyword">this</span>._updates.events.push([<span class="string">'layer.add'</span>, {layer: layer}]);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>.updateClasses(layer.id);
+    },
+
+    <span class="comment">/**
+     * Remove a layer from this stylesheet, given its id.
+     * @param {string} id id of the layer to remove
+     * @returns {Style} this style
+     * @throws {Error} if no layer is found with the given ID
+     * @private
+     */</span>
+    removeLayer: <span class="keyword">function</span>(id) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>._layers[id];
+        <span class="keyword">if</span> (layer === <span class="literal">undefined</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'There is no layer with this ID'</span>);
+        }
+        <span class="keyword">for</span> (<span class="keyword">var</span> i <span class="keyword">in</span> <span class="keyword">this</span>._layers) {
+            <span class="keyword">if</span> (<span class="keyword">this</span>._layers[i].ref === id) {
+                <span class="keyword">this</span>.removeLayer(i);
+            }
+        }
+
+        layer.off(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardLayerEvent);
+
+        <span class="keyword">delete</span> <span class="keyword">this</span>._layers[id];
+        <span class="keyword">this</span>._order.splice(<span class="keyword">this</span>._order.indexOf(id), <span class="number">1</span>);
+
+        <span class="keyword">this</span>._updates.allLayers = <span class="literal">true</span>;
+        <span class="keyword">this</span>._updates.events.push([<span class="string">'layer.remove'</span>, {layer: layer}]);
+        <span class="keyword">this</span>._updates.changed = <span class="literal">true</span>;
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Return the style layer object with the given `id`.
+     *
+     * @param {string} id - id of the desired layer
+     * @returns {?Object} a layer, if one with the given `id` exists
+     * @private
+     */</span>
+    getLayer: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>._layers[id];
+    },
+
+    <span class="comment">/**
+     * If a layer has a `ref` property that makes it derive some values
+     * from another layer, return that referent layer. Otherwise,
+     * returns the layer itself.
+     * @param {string} id the layer's id
+     * @returns {Layer} the referent layer or the layer itself
+     * @private
+     */</span>
+    getReferentLayer: <span class="keyword">function</span>(id) {
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.getLayer(id);
+        <span class="keyword">if</span> (layer.ref) {
+            layer = <span class="keyword">this</span>.getLayer(layer.ref);
+        }
+        <span class="keyword">return</span> layer;
+    },
+
+    setLayerZoomRange: <span class="keyword">function</span>(layerId, minzoom, maxzoom) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.getReferentLayer(layerId);
+
+        <span class="keyword">if</span> (layer.minzoom === minzoom &amp;&amp; layer.maxzoom === maxzoom) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">if</span> (minzoom != <span class="literal">null</span>) {
+            layer.minzoom = minzoom;
+        }
+        <span class="keyword">if</span> (maxzoom != <span class="literal">null</span>) {
+            layer.maxzoom = maxzoom;
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>._updateLayer(layer);
+    },
+
+    setFilter: <span class="keyword">function</span>(layerId, filter) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.getReferentLayer(layerId);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._handleErrors(validateStyle.filter, <span class="string">'layers.'</span> + layer.id + <span class="string">'.filter'</span>, filter)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">if</span> (util.deepEqual(layer.filter, filter)) <span class="keyword">return</span> <span class="keyword">this</span>;
+        layer.filter = util.clone(filter);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>._updateLayer(layer);
+    },
+
+    <span class="comment">/**
+     * Get a layer's filter object
+     * @param {string} layer the layer to inspect
+     * @returns {*} the layer's filter, if any
+     * @private
+     */</span>
+    getFilter: <span class="keyword">function</span>(layer) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.getReferentLayer(layer).filter;
+    },
+
+    setLayoutProperty: <span class="keyword">function</span>(layerId, name, value) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.getReferentLayer(layerId);
+
+        <span class="keyword">if</span> (util.deepEqual(layer.getLayoutProperty(name), value)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        layer.setLayoutProperty(name, value);
+        <span class="keyword">return</span> <span class="keyword">this</span>._updateLayer(layer);
+    },
+
+    <span class="comment">/**
+     * Get a layout property's value from a given layer
+     * @param {string} layer the layer to inspect
+     * @param {string} name the name of the layout property
+     * @returns {*} the property value
+     * @private
+     */</span>
+    getLayoutProperty: <span class="keyword">function</span>(layer, name) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.getReferentLayer(layer).getLayoutProperty(name);
+    },
+
+    setPaintProperty: <span class="keyword">function</span>(layerId, name, value, klass) {
+        <span class="keyword">this</span>._checkLoaded();
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.getLayer(layerId);
+
+        <span class="keyword">if</span> (util.deepEqual(layer.getPaintProperty(name, klass), value)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">var</span> wasFeatureConstant = layer.isPaintValueFeatureConstant(name);
+        layer.setPaintProperty(name, value, klass);
+
+        <span class="keyword">var</span> isFeatureConstant = !(StyleFunction.isFunctionDefinition(value) &amp;&amp; value.property !== <span class="string">'$zoom'</span> &amp;&amp; value.property !== <span class="literal">undefined</span>);
+
+        <span class="keyword">if</span> (!isFeatureConstant || !wasFeatureConstant) {
+            <span class="keyword">this</span>._updates.layers[layerId] = <span class="literal">true</span>;
+            <span class="keyword">if</span> (layer.source) {
+                <span class="keyword">this</span>._updates.sources[layer.source] = <span class="literal">true</span>;
+            }
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>.updateClasses(layerId, name);
+    },
+
+    getPaintProperty: <span class="keyword">function</span>(layer, name, klass) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.getLayer(layer).getPaintProperty(name, klass);
+    },
+
+    updateClasses: <span class="function"><span class="keyword">function</span> <span class="params">(layerId, paintName)</span> {</span>
+        <span class="keyword">this</span>._updates.changed = <span class="literal">true</span>;
+        <span class="keyword">if</span> (!layerId) {
+            <span class="keyword">this</span>._updates.allPaintProps = <span class="literal">true</span>;
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> props = <span class="keyword">this</span>._updates.paintProps;
+            <span class="keyword">if</span> (!props[layerId]) props[layerId] = {};
+            props[layerId][paintName || <span class="string">'all'</span>] = <span class="literal">true</span>;
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    serialize: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> util.filterObject({
+            version: <span class="keyword">this</span>.stylesheet.version,
+            name: <span class="keyword">this</span>.stylesheet.name,
+            metadata: <span class="keyword">this</span>.stylesheet.metadata,
+            center: <span class="keyword">this</span>.stylesheet.center,
+            zoom: <span class="keyword">this</span>.stylesheet.zoom,
+            bearing: <span class="keyword">this</span>.stylesheet.bearing,
+            pitch: <span class="keyword">this</span>.stylesheet.pitch,
+            sprite: <span class="keyword">this</span>.stylesheet.sprite,
+            glyphs: <span class="keyword">this</span>.stylesheet.glyphs,
+            transition: <span class="keyword">this</span>.stylesheet.transition,
+            sources: util.mapObject(<span class="keyword">this</span>.sources, <span class="keyword">function</span>(source) {
+                <span class="keyword">return</span> source.serialize();
+            }),
+            layers: <span class="keyword">this</span>._order.map(<span class="keyword">function</span>(id) {
+                <span class="keyword">return</span> <span class="keyword">this</span>._layers[id].serialize();
+            }, <span class="keyword">this</span>)
+        }, <span class="keyword">function</span>(value) { <span class="keyword">return</span> value !== <span class="literal">undefined</span>; });
+    },
+
+    _updateLayer: <span class="function"><span class="keyword">function</span> <span class="params">(layer)</span> {</span>
+        <span class="keyword">this</span>._updates.layers[layer.id] = <span class="literal">true</span>;
+        <span class="keyword">if</span> (layer.source) {
+            <span class="keyword">this</span>._updates.sources[layer.source] = <span class="literal">true</span>;
+        }
+        <span class="keyword">this</span>._updates.changed = <span class="literal">true</span>;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _flattenRenderedFeatures: <span class="keyword">function</span>(sourceResults) {
+        <span class="keyword">var</span> features = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> l = <span class="keyword">this</span>._order.length - <span class="number">1</span>; l >= <span class="number">0</span>; l--) {
+            <span class="keyword">var</span> layerID = <span class="keyword">this</span>._order[l];
+            <span class="keyword">for</span> (<span class="keyword">var</span> s = <span class="number">0</span>; s &lt; sourceResults.length; s++) {
+                <span class="keyword">var</span> layerFeatures = sourceResults[s][layerID];
+                <span class="keyword">if</span> (layerFeatures) {
+                    <span class="keyword">for</span> (<span class="keyword">var</span> f = <span class="number">0</span>; f &lt; layerFeatures.length; f++) {
+                        features.push(layerFeatures[f]);
+                    }
+                }
+            }
+        }
+        <span class="keyword">return</span> features;
+    },
+
+    queryRenderedFeatures: <span class="keyword">function</span>(queryGeometry, params, zoom, bearing) {
+        <span class="keyword">if</span> (params &amp;&amp; params.filter) {
+            <span class="keyword">this</span>._handleErrors(validateStyle.filter, <span class="string">'queryRenderedFeatures.filter'</span>, params.filter, <span class="literal">true</span>);
+        }
+
+        <span class="keyword">var</span> sourceResults = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.sources) {
+            <span class="keyword">var</span> source = <span class="keyword">this</span>.sources[id];
+            <span class="keyword">if</span> (source.queryRenderedFeatures) {
+                sourceResults.push(source.queryRenderedFeatures(queryGeometry, params, zoom, bearing));
+            }
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>._flattenRenderedFeatures(sourceResults);
+    },
+
+    querySourceFeatures: <span class="keyword">function</span>(sourceID, params) {
+        <span class="keyword">if</span> (params &amp;&amp; params.filter) {
+            <span class="keyword">this</span>._handleErrors(validateStyle.filter, <span class="string">'querySourceFeatures.filter'</span>, params.filter, <span class="literal">true</span>);
+        }
+        <span class="keyword">var</span> source = <span class="keyword">this</span>.getSource(sourceID);
+        <span class="keyword">return</span> source &amp;&amp; source.querySourceFeatures ? source.querySourceFeatures(params) : [];
+    },
+
+    _handleErrors: <span class="keyword">function</span>(validate, key, value, throws, props) {
+        <span class="keyword">var</span> action = throws ? validateStyle.throwErrors : validateStyle.emitErrors;
+        <span class="keyword">var</span> result = validate.call(validateStyle, util.extend({
+            key: key,
+            style: <span class="keyword">this</span>.serialize(),
+            value: value,
+            styleSpec: styleSpec
+        }, props));
+        <span class="keyword">return</span> action.call(validateStyle, <span class="keyword">this</span>, result);
+    },
+
+    _remove: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>.dispatcher.remove();
+    },
+
+    _reloadSource: <span class="keyword">function</span>(id) {
+        <span class="keyword">this</span>.sources[id].reload();
+    },
+
+    _updateSources: <span class="keyword">function</span>(transform) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.sources) {
+            <span class="keyword">this</span>.sources[id].update(transform);
+        }
+    },
+
+    _redoPlacement: <span class="keyword">function</span>() {
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.sources) {
+            <span class="keyword">if</span> (<span class="keyword">this</span>.sources[id].redoPlacement) <span class="keyword">this</span>.sources[id].redoPlacement();
+        }
+    },
+
+    _forwardSourceEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(<span class="string">'source.'</span> + e.type, util.extend({source: e.target}, e));
+    },
+
+    _forwardTileEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(e.type, util.extend({source: e.target}, e));
+    },
+
+    _forwardLayerEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(<span class="string">'layer.'</span> + e.type, util.extend({layer: {id: e.target.id}}, e));
+    },
+
+    <span class="comment">// Callbacks from web workers</span>
+
+    <span class="string">'get sprite json'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> sprite = <span class="keyword">this</span>.sprite;
+        <span class="keyword">if</span> (sprite.loaded()) {
+            callback(<span class="literal">null</span>, { sprite: sprite.data, retina: sprite.retina });
+        } <span class="keyword">else</span> {
+            sprite.on(<span class="string">'load'</span>, <span class="keyword">function</span>() {
+                callback(<span class="literal">null</span>, { sprite: sprite.data, retina: sprite.retina });
+            });
+        }
+    },
+
+    <span class="string">'get icons'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> sprite = <span class="keyword">this</span>.sprite;
+        <span class="keyword">var</span> spriteAtlas = <span class="keyword">this</span>.spriteAtlas;
+        <span class="keyword">if</span> (sprite.loaded()) {
+            spriteAtlas.setSprite(sprite);
+            spriteAtlas.addIcons(params.icons, callback);
+        } <span class="keyword">else</span> {
+            sprite.on(<span class="string">'load'</span>, <span class="keyword">function</span>() {
+                spriteAtlas.setSprite(sprite);
+                spriteAtlas.addIcons(params.icons, callback);
+            });
+        }
+    },
+
+    <span class="string">'get glyphs'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> stacks = params.stacks,
+            remaining = Object.keys(stacks).length,
+            allGlyphs = {};
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> fontName <span class="keyword">in</span> stacks) {
+            <span class="keyword">this</span>.glyphSource.getSimpleGlyphs(fontName, stacks[fontName], params.uid, done);
+        }
+
+        <span class="function"><span class="keyword">function</span> <span class="title">done</span><span class="params">(err, glyphs, fontName)</span> {</span>
+            <span class="keyword">if</span> (err) console.error(err);
+
+            allGlyphs[fontName] = glyphs;
+            remaining--;
+
+            <span class="keyword">if</span> (remaining === <span class="number">0</span>)
+                callback(<span class="literal">null</span>, allGlyphs);
+        }
+    }
+});
+</code></pre>

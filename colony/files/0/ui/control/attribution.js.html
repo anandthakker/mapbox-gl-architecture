@@ -1,0 +1,81 @@
+<h1>attribution.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Control = require(<span class="string">'./control'</span>);
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = Attribution;
+
+<span class="comment">/**
+ * Creates an attribution control
+ * @class Attribution
+ * @param {Object} [options]
+ * @param {string} [options.position='bottom-right'] A string indicating the control's position on the map. Options are `top-right`, `top-left`, `bottom-right`, `bottom-left`
+ * @example
+ * var map = new mapboxgl.Map({attributionControl: false})
+ *     .addControl(new mapboxgl.Attribution({position: 'top-left'}));
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Attribution</span><span class="params">(options)</span> {</span>
+    util.setOptions(<span class="keyword">this</span>, options);
+}
+
+Attribution.createAttributionString = <span class="keyword">function</span>(sources) {
+    <span class="keyword">var</span> attributions = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> sources) {
+        <span class="keyword">var</span> source = sources[id];
+        <span class="keyword">if</span> (source.attribution &amp;&amp; attributions.indexOf(source.attribution) &lt; <span class="number">0</span>) {
+            attributions.push(source.attribution);
+        }
+    }
+
+    <span class="comment">// remove any entries that are substrings of another entry.</span>
+    <span class="comment">// first sort by length so that substrings come first</span>
+    attributions.sort(<span class="function"><span class="keyword">function</span> <span class="params">(a, b)</span> {</span> <span class="keyword">return</span> a.length - b.length; });
+    attributions = attributions.filter(<span class="function"><span class="keyword">function</span> <span class="params">(attrib, i)</span> {</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = i + <span class="number">1</span>; j &lt; attributions.length; j++) {
+            <span class="keyword">if</span> (attributions[j].indexOf(attrib) >= <span class="number">0</span>) { <span class="keyword">return</span> <span class="literal">false</span>; }
+        }
+        <span class="keyword">return</span> <span class="literal">true</span>;
+    });
+
+    <span class="keyword">return</span> attributions.join(<span class="string">' | '</span>);
+};
+
+Attribution.prototype = util.inherit(Control, {
+    options: {
+        position: <span class="string">'bottom-right'</span>
+    },
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">var</span> className = <span class="string">'mapboxgl-ctrl-attrib'</span>,
+            container = <span class="keyword">this</span>._container = DOM.create(<span class="string">'div'</span>, className, map.getContainer());
+
+        <span class="keyword">this</span>._update();
+        map.on(<span class="string">'source.load'</span>, <span class="keyword">this</span>._update.bind(<span class="keyword">this</span>));
+        map.on(<span class="string">'source.change'</span>, <span class="keyword">this</span>._update.bind(<span class="keyword">this</span>));
+        map.on(<span class="string">'source.remove'</span>, <span class="keyword">this</span>._update.bind(<span class="keyword">this</span>));
+        map.on(<span class="string">'moveend'</span>, <span class="keyword">this</span>._updateEditLink.bind(<span class="keyword">this</span>));
+
+        <span class="keyword">return</span> container;
+    },
+
+    _update: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._map.style) {
+            <span class="keyword">this</span>._container.innerHTML = Attribution.createAttributionString(<span class="keyword">this</span>._map.style.sources);
+        }
+
+        <span class="keyword">this</span>._editLink = <span class="keyword">this</span>._container.getElementsByClassName(<span class="string">'mapbox-improve-map'</span>)[<span class="number">0</span>];
+        <span class="keyword">this</span>._updateEditLink();
+    },
+
+    _updateEditLink: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._editLink) {
+            <span class="keyword">var</span> center = <span class="keyword">this</span>._map.getCenter();
+            <span class="keyword">this</span>._editLink.href = <span class="string">'https://www.mapbox.com/map-feedback/#/'</span> +
+                    center.lng + <span class="string">'/'</span> + center.lat + <span class="string">'/'</span> + Math.round(<span class="keyword">this</span>._map.getZoom() + <span class="number">1</span>);
+        }
+    }
+});
+</code></pre>

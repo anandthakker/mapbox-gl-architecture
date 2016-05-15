@@ -1,0 +1,215 @@
+<h1>supercluster</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> kdbush = require(<span class="string">'kdbush'</span>);
+
+module.exports = supercluster;
+
+<span class="function"><span class="keyword">function</span> <span class="title">supercluster</span><span class="params">(options)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> SuperCluster(options);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">SuperCluster</span><span class="params">(options)</span> {</span>
+    <span class="keyword">this</span>.options = extend(Object.create(<span class="keyword">this</span>.options), options);
+    <span class="keyword">this</span>.trees = <span class="keyword">new</span> Array(<span class="keyword">this</span>.options.maxZoom + <span class="number">1</span>);
+}
+
+SuperCluster.prototype = {
+    options: {
+        minZoom: <span class="number">0</span>,   <span class="comment">// min zoom to generate clusters on</span>
+        maxZoom: <span class="number">16</span>,  <span class="comment">// max zoom level to cluster the points on</span>
+        radius: <span class="number">40</span>,   <span class="comment">// cluster radius in pixels</span>
+        extent: <span class="number">512</span>,  <span class="comment">// tile extent (radius is calculated relative to it)</span>
+        nodeSize: <span class="number">64</span>, <span class="comment">// size of the KD-tree leaf node, affects performance</span>
+        log: <span class="literal">false</span>    <span class="comment">// whether to log timing info</span>
+    },
+
+    load: <span class="function"><span class="keyword">function</span> <span class="params">(points)</span> {</span>
+        <span class="keyword">var</span> log = <span class="keyword">this</span>.options.log;
+
+        <span class="keyword">if</span> (log) console.time(<span class="string">'total time'</span>);
+
+        <span class="keyword">var</span> timerId = <span class="string">'prepare '</span> + points.length + <span class="string">' points'</span>;
+        <span class="keyword">if</span> (log) console.time(timerId);
+
+        <span class="keyword">this</span>.points = points;
+
+        <span class="comment">// generate a cluster object for each point</span>
+        <span class="keyword">var</span> clusters = points.map(createPointCluster);
+        <span class="keyword">if</span> (log) console.timeEnd(timerId);
+
+        <span class="comment">// cluster points on max zoom, then cluster the results on previous zoom, etc.;</span>
+        <span class="comment">// results in a cluster hierarchy across zoom levels</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> z = <span class="keyword">this</span>.options.maxZoom; z >= <span class="keyword">this</span>.options.minZoom; z--) {
+            <span class="keyword">var</span> now = +Date.now();
+
+            <span class="comment">// index input points into a KD-tree</span>
+            <span class="keyword">this</span>.trees[z + <span class="number">1</span>] = kdbush(clusters, getX, getY, <span class="keyword">this</span>.options.nodeSize, Float32Array);
+
+            clusters = <span class="keyword">this</span>._cluster(clusters, z); <span class="comment">// create a new set of clusters for the zoom</span>
+
+            <span class="keyword">if</span> (log) console.log(<span class="string">'z%d: %d clusters in %dms'</span>, z, clusters.length, +Date.now() - now);
+        }
+
+        <span class="comment">// index top-level clusters</span>
+        <span class="keyword">this</span>.trees[<span class="keyword">this</span>.options.minZoom] = kdbush(clusters, getX, getY, <span class="keyword">this</span>.options.nodeSize, Float32Array);
+
+        <span class="keyword">if</span> (log) console.timeEnd(<span class="string">'total time'</span>);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    getClusters: <span class="function"><span class="keyword">function</span> <span class="params">(bbox, zoom)</span> {</span>
+        <span class="keyword">var</span> tree = <span class="keyword">this</span>.trees[<span class="keyword">this</span>._limitZoom(zoom)];
+        <span class="keyword">var</span> ids = tree.range(lngX(bbox[<span class="number">0</span>]), latY(bbox[<span class="number">3</span>]), lngX(bbox[<span class="number">2</span>]), latY(bbox[<span class="number">1</span>]));
+        <span class="keyword">var</span> clusters = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ids.length; i++) {
+            <span class="keyword">var</span> c = tree.points[ids[i]];
+            clusters.push(c.id !== -<span class="number">1</span> ? <span class="keyword">this</span>.points[c.id] : getClusterJSON(c));
+        }
+        <span class="keyword">return</span> clusters;
+    },
+
+    getTile: <span class="function"><span class="keyword">function</span> <span class="params">(z, x, y)</span> {</span>
+        <span class="keyword">var</span> z2 = Math.pow(<span class="number">2</span>, z);
+        <span class="keyword">var</span> extent = <span class="keyword">this</span>.options.extent;
+        <span class="keyword">var</span> p = <span class="keyword">this</span>.options.radius / extent;
+        <span class="keyword">var</span> tree = <span class="keyword">this</span>.trees[<span class="keyword">this</span>._limitZoom(z)];
+        <span class="keyword">var</span> ids = tree.range(
+            (x - p) / z2,
+            (y - p) / z2,
+            (x + <span class="number">1</span> + p) / z2,
+            (y + <span class="number">1</span> + p) / z2);
+
+        <span class="keyword">if</span> (!ids.length) <span class="keyword">return</span> <span class="literal">null</span>;
+
+        <span class="keyword">var</span> tile = {
+            features: []
+        };
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ids.length; i++) {
+            <span class="keyword">var</span> c = tree.points[ids[i]];
+            <span class="keyword">var</span> feature = {
+                type: <span class="number">1</span>,
+                geometry: [[
+                    Math.round(extent * (c.x * z2 - x)),
+                    Math.round(extent * (c.y * z2 - y))
+                ]],
+                tags: c.id !== -<span class="number">1</span> ? <span class="keyword">this</span>.points[c.id].properties : getClusterProperties(c)
+            };
+            tile.features.push(feature);
+        }
+        <span class="keyword">return</span> tile;
+    },
+
+    _limitZoom: <span class="function"><span class="keyword">function</span> <span class="params">(z)</span> {</span>
+        <span class="keyword">return</span> Math.max(<span class="keyword">this</span>.options.minZoom, Math.min(z, <span class="keyword">this</span>.options.maxZoom + <span class="number">1</span>));
+    },
+
+    _cluster: <span class="function"><span class="keyword">function</span> <span class="params">(points, zoom)</span> {</span>
+        <span class="keyword">var</span> clusters = [];
+        <span class="keyword">var</span> r = <span class="keyword">this</span>.options.radius / (<span class="keyword">this</span>.options.extent * Math.pow(<span class="number">2</span>, zoom));
+
+        <span class="comment">// loop through each point</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; points.length; i++) {
+            <span class="keyword">var</span> p = points[i];
+            <span class="comment">// if we've already visited the point at this zoom level, skip it</span>
+            <span class="keyword">if</span> (p.zoom &lt;= zoom) <span class="keyword">continue</span>;
+            p.zoom = zoom;
+
+            <span class="comment">// find all nearby points</span>
+            <span class="keyword">var</span> tree = <span class="keyword">this</span>.trees[zoom + <span class="number">1</span>];
+            <span class="keyword">var</span> neighborIds = tree.within(p.x, p.y, r);
+
+            <span class="keyword">var</span> foundNeighbors = <span class="literal">false</span>;
+            <span class="keyword">var</span> numPoints = p.numPoints;
+            <span class="keyword">var</span> wx = p.x * numPoints;
+            <span class="keyword">var</span> wy = p.y * numPoints;
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; neighborIds.length; j++) {
+                <span class="keyword">var</span> b = tree.points[neighborIds[j]];
+                <span class="comment">// filter out neighbors that are too far or already processed</span>
+                <span class="keyword">if</span> (zoom &lt; b.zoom) {
+                    foundNeighbors = <span class="literal">true</span>;
+                    b.zoom = zoom; <span class="comment">// save the zoom (so it doesn't get processed twice)</span>
+                    wx += b.x * b.numPoints; <span class="comment">// accumulate coordinates for calculating weighted center</span>
+                    wy += b.y * b.numPoints;
+                    numPoints += b.numPoints;
+                }
+            }
+
+            clusters.push(foundNeighbors ? createCluster(wx / numPoints, wy / numPoints, numPoints, -<span class="number">1</span>) : p);
+        }
+
+        <span class="keyword">return</span> clusters;
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">createCluster</span><span class="params">(x, y, numPoints, id)</span> {</span>
+    <span class="keyword">return</span> {
+        x: x, <span class="comment">// weighted cluster center</span>
+        y: y,
+        zoom: <span class="literal">Infinity</span>, <span class="comment">// the last zoom the cluster was processed at</span>
+        id: id, <span class="comment">// index of the source feature in the original input array</span>
+        numPoints: numPoints
+    };
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createPointCluster</span><span class="params">(p, i)</span> {</span>
+    <span class="keyword">var</span> coords = p.geometry.coordinates;
+    <span class="keyword">return</span> createCluster(lngX(coords[<span class="number">0</span>]), latY(coords[<span class="number">1</span>]), <span class="number">1</span>, i);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getClusterJSON</span><span class="params">(cluster)</span> {</span>
+    <span class="keyword">return</span> {
+        type: <span class="string">'Feature'</span>,
+        properties: getClusterProperties(cluster),
+        geometry: {
+            type: <span class="string">'Point'</span>,
+            coordinates: [xLng(cluster.x), yLat(cluster.y)]
+        }
+    };
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getClusterProperties</span><span class="params">(cluster)</span> {</span>
+    <span class="keyword">var</span> count = cluster.numPoints;
+    <span class="keyword">var</span> abbrev = count >= <span class="number">10000</span> ? Math.round(count / <span class="number">1000</span>) + <span class="string">'k'</span> :
+                 count >= <span class="number">1000</span> ? (Math.round(count / <span class="number">100</span>) / <span class="number">10</span>) + <span class="string">'k'</span> : count;
+    <span class="keyword">return</span> {
+        cluster: <span class="literal">true</span>,
+        point_count: count,
+        point_count_abbreviated: abbrev
+    };
+}
+
+<span class="comment">// longitude/latitude to spherical mercator in [0..1] range</span>
+<span class="function"><span class="keyword">function</span> <span class="title">lngX</span><span class="params">(lng)</span> {</span>
+    <span class="keyword">return</span> lng / <span class="number">360</span> + <span class="number">0.5</span>;
+}
+<span class="function"><span class="keyword">function</span> <span class="title">latY</span><span class="params">(lat)</span> {</span>
+    <span class="keyword">var</span> sin = Math.sin(lat * Math.PI / <span class="number">180</span>),
+        y = (<span class="number">0.5</span> - <span class="number">0.25</span> * Math.log((<span class="number">1</span> + sin) / (<span class="number">1</span> - sin)) / Math.PI);
+    <span class="keyword">return</span> y &lt; <span class="number">0</span> ? <span class="number">0</span> :
+           y > <span class="number">1</span> ? <span class="number">1</span> : y;
+}
+
+<span class="comment">// spherical mercator to longitude/latitude</span>
+<span class="function"><span class="keyword">function</span> <span class="title">xLng</span><span class="params">(x)</span> {</span>
+    <span class="keyword">return</span> (x - <span class="number">0.5</span>) * <span class="number">360</span>;
+}
+<span class="function"><span class="keyword">function</span> <span class="title">yLat</span><span class="params">(y)</span> {</span>
+    <span class="keyword">var</span> y2 = (<span class="number">180</span> - y * <span class="number">360</span>) * Math.PI / <span class="number">180</span>;
+    <span class="keyword">return</span> <span class="number">360</span> * Math.atan(Math.exp(y2)) / Math.PI - <span class="number">90</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">extend</span><span class="params">(dest, src)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> src) dest[id] = src[id];
+    <span class="keyword">return</span> dest;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getX</span><span class="params">(p)</span> {</span>
+    <span class="keyword">return</span> p.x;
+}
+<span class="function"><span class="keyword">function</span> <span class="title">getY</span><span class="params">(p)</span> {</span>
+    <span class="keyword">return</span> p.y;
+}
+</code></pre>

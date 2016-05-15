@@ -1,0 +1,440 @@
+<h1>transform.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> LngLat = require(<span class="string">'./lng_lat'</span>),
+    Point = require(<span class="string">'point-geometry'</span>),
+    Coordinate = require(<span class="string">'./coordinate'</span>),
+    wrap = require(<span class="string">'../util/util'</span>).wrap,
+    interp = require(<span class="string">'../util/interpolate'</span>),
+    TileCoord = require(<span class="string">'../source/tile_coord'</span>),
+    EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT,
+    glmatrix = require(<span class="string">'gl-matrix'</span>);
+
+<span class="keyword">var</span> vec4 = glmatrix.vec4,
+    mat4 = glmatrix.mat4,
+    mat2 = glmatrix.mat2;
+
+module.exports = Transform;
+
+<span class="comment">/**
+ * A single transform, generally used for a single tile to be
+ * scaled, rotated, and zoomed.
+ *
+ * @param {number} minZoom
+ * @param {number} maxZoom
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Transform</span><span class="params">(minZoom, maxZoom)</span> {</span>
+    <span class="keyword">this</span>.tileSize = <span class="number">512</span>; <span class="comment">// constant</span>
+
+    <span class="keyword">this</span>._minZoom = minZoom || <span class="number">0</span>;
+    <span class="keyword">this</span>._maxZoom = maxZoom || <span class="number">22</span>;
+
+    <span class="keyword">this</span>.latRange = [-<span class="number">85.05113</span>, <span class="number">85.05113</span>];
+
+    <span class="keyword">this</span>.width = <span class="number">0</span>;
+    <span class="keyword">this</span>.height = <span class="number">0</span>;
+    <span class="keyword">this</span>._center = <span class="keyword">new</span> LngLat(<span class="number">0</span>, <span class="number">0</span>);
+    <span class="keyword">this</span>.zoom = <span class="number">0</span>;
+    <span class="keyword">this</span>.angle = <span class="number">0</span>;
+    <span class="keyword">this</span>._altitude = <span class="number">1.5</span>;
+    <span class="keyword">this</span>._pitch = <span class="number">0</span>;
+    <span class="keyword">this</span>._unmodified = <span class="literal">true</span>;
+}
+
+Transform.prototype = {
+    get minZoom() { <span class="keyword">return</span> <span class="keyword">this</span>._minZoom; },
+    set minZoom(zoom) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._minZoom === zoom) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._minZoom = zoom;
+        <span class="keyword">this</span>.zoom = Math.max(<span class="keyword">this</span>.zoom, zoom);
+    },
+
+    get maxZoom() { <span class="keyword">return</span> <span class="keyword">this</span>._maxZoom; },
+    set maxZoom(zoom) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._maxZoom === zoom) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._maxZoom = zoom;
+        <span class="keyword">this</span>.zoom = Math.min(<span class="keyword">this</span>.zoom, zoom);
+    },
+
+    get worldSize() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.tileSize * <span class="keyword">this</span>.scale;
+    },
+
+    get centerPoint() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.size._div(<span class="number">2</span>);
+    },
+
+    get size() {
+        <span class="keyword">return</span> <span class="keyword">new</span> Point(<span class="keyword">this</span>.width, <span class="keyword">this</span>.height);
+    },
+
+    get bearing() {
+        <span class="keyword">return</span> -<span class="keyword">this</span>.angle / Math.PI * <span class="number">180</span>;
+    },
+    set bearing(bearing) {
+        <span class="keyword">var</span> b = -wrap(bearing, -<span class="number">180</span>, <span class="number">180</span>) * Math.PI / <span class="number">180</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.angle === b) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>.angle = b;
+        <span class="keyword">this</span>._calcProjMatrix();
+
+        <span class="comment">// 2x2 matrix for rotating points</span>
+        <span class="keyword">this</span>.rotationMatrix = mat2.create();
+        mat2.rotate(<span class="keyword">this</span>.rotationMatrix, <span class="keyword">this</span>.rotationMatrix, <span class="keyword">this</span>.angle);
+    },
+
+    get pitch() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._pitch / Math.PI * <span class="number">180</span>;
+    },
+    set pitch(pitch) {
+        <span class="keyword">var</span> p = Math.min(<span class="number">60</span>, pitch) / <span class="number">180</span> * Math.PI;
+        <span class="keyword">if</span> (<span class="keyword">this</span>._pitch === p) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>._pitch = p;
+        <span class="keyword">this</span>._calcProjMatrix();
+    },
+
+    get altitude() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._altitude;
+    },
+    set altitude(altitude) {
+        <span class="keyword">var</span> a = Math.max(<span class="number">0.75</span>, altitude);
+        <span class="keyword">if</span> (<span class="keyword">this</span>._altitude === a) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>._altitude = a;
+        <span class="keyword">this</span>._calcProjMatrix();
+    },
+
+    get zoom() { <span class="keyword">return</span> <span class="keyword">this</span>._zoom; },
+    set zoom(zoom) {
+        <span class="keyword">var</span> z = Math.min(Math.max(zoom, <span class="keyword">this</span>.minZoom), <span class="keyword">this</span>.maxZoom);
+        <span class="keyword">if</span> (<span class="keyword">this</span>._zoom === z) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>._zoom = z;
+        <span class="keyword">this</span>.scale = <span class="keyword">this</span>.zoomScale(z);
+        <span class="keyword">this</span>.tileZoom = Math.floor(z);
+        <span class="keyword">this</span>.zoomFraction = z - <span class="keyword">this</span>.tileZoom;
+        <span class="keyword">this</span>._calcProjMatrix();
+        <span class="keyword">this</span>._constrain();
+    },
+
+    get center() { <span class="keyword">return</span> <span class="keyword">this</span>._center; },
+    set center(center) {
+        <span class="keyword">if</span> (center.lat === <span class="keyword">this</span>._center.lat &amp;&amp; center.lng === <span class="keyword">this</span>._center.lng) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>._center = center;
+        <span class="keyword">this</span>._calcProjMatrix();
+        <span class="keyword">this</span>._constrain();
+    },
+
+    resize: <span class="keyword">function</span>(width, height) {
+        <span class="keyword">this</span>.width = width;
+        <span class="keyword">this</span>.height = height;
+
+        <span class="keyword">this</span>.pixelsToGLUnits = [<span class="number">2</span> / width, -<span class="number">2</span> / height];
+        <span class="keyword">this</span>._calcProjMatrix();
+        <span class="keyword">this</span>._constrain();
+    },
+
+    get unmodified() { <span class="keyword">return</span> <span class="keyword">this</span>._unmodified; },
+
+    zoomScale: <span class="keyword">function</span>(zoom) { <span class="keyword">return</span> Math.pow(<span class="number">2</span>, zoom); },
+    scaleZoom: <span class="keyword">function</span>(scale) { <span class="keyword">return</span> Math.log(scale) / Math.LN2; },
+
+    project: <span class="keyword">function</span>(lnglat, worldSize) {
+        <span class="keyword">return</span> <span class="keyword">new</span> Point(
+            <span class="keyword">this</span>.lngX(lnglat.lng, worldSize),
+            <span class="keyword">this</span>.latY(lnglat.lat, worldSize));
+    },
+
+    unproject: <span class="keyword">function</span>(point, worldSize) {
+        <span class="keyword">return</span> <span class="keyword">new</span> LngLat(
+            <span class="keyword">this</span>.xLng(point.x, worldSize),
+            <span class="keyword">this</span>.yLat(point.y, worldSize));
+    },
+
+    get x() { <span class="keyword">return</span> <span class="keyword">this</span>.lngX(<span class="keyword">this</span>.center.lng); },
+    get y() { <span class="keyword">return</span> <span class="keyword">this</span>.latY(<span class="keyword">this</span>.center.lat); },
+
+    get point() { <span class="keyword">return</span> <span class="keyword">new</span> Point(<span class="keyword">this</span>.x, <span class="keyword">this</span>.y); },
+
+    <span class="comment">/**
+     * latitude to absolute x coord
+     * @param {number} lon
+     * @param {number} [worldSize=this.worldSize]
+     * @returns {number} pixel coordinate
+     * @private
+     */</span>
+    lngX: <span class="keyword">function</span>(lng, worldSize) {
+        <span class="keyword">return</span> (<span class="number">180</span> + lng) * (worldSize || <span class="keyword">this</span>.worldSize) / <span class="number">360</span>;
+    },
+    <span class="comment">/**
+     * latitude to absolute y coord
+     * @param {number} lat
+     * @param {number} [worldSize=this.worldSize]
+     * @returns {number} pixel coordinate
+     * @private
+     */</span>
+    latY: <span class="keyword">function</span>(lat, worldSize) {
+        <span class="keyword">var</span> y = <span class="number">180</span> / Math.PI * Math.log(Math.tan(Math.PI / <span class="number">4</span> + lat * Math.PI / <span class="number">360</span>));
+        <span class="keyword">return</span> (<span class="number">180</span> - y) * (worldSize || <span class="keyword">this</span>.worldSize) / <span class="number">360</span>;
+    },
+
+    xLng: <span class="keyword">function</span>(x, worldSize) {
+        <span class="keyword">return</span> x * <span class="number">360</span> / (worldSize || <span class="keyword">this</span>.worldSize) - <span class="number">180</span>;
+    },
+    yLat: <span class="keyword">function</span>(y, worldSize) {
+        <span class="keyword">var</span> y2 = <span class="number">180</span> - y * <span class="number">360</span> / (worldSize || <span class="keyword">this</span>.worldSize);
+        <span class="keyword">return</span> <span class="number">360</span> / Math.PI * Math.atan(Math.exp(y2 * Math.PI / <span class="number">180</span>)) - <span class="number">90</span>;
+    },
+
+    panBy: <span class="keyword">function</span>(offset) {
+        <span class="keyword">var</span> point = <span class="keyword">this</span>.centerPoint._add(offset);
+        <span class="keyword">this</span>.center = <span class="keyword">this</span>.pointLocation(point);
+    },
+
+    setLocationAtPoint: <span class="keyword">function</span>(lnglat, point) {
+        <span class="keyword">var</span> c = <span class="keyword">this</span>.locationCoordinate(lnglat);
+        <span class="keyword">var</span> coordAtPoint = <span class="keyword">this</span>.pointCoordinate(point);
+        <span class="keyword">var</span> coordCenter = <span class="keyword">this</span>.pointCoordinate(<span class="keyword">this</span>.centerPoint);
+        <span class="keyword">var</span> translate = coordAtPoint._sub(c);
+        <span class="keyword">this</span>._unmodified = <span class="literal">false</span>;
+        <span class="keyword">this</span>.center = <span class="keyword">this</span>.coordinateLocation(coordCenter._sub(translate));
+    },
+
+    <span class="comment">/**
+     * Given a location, return the screen point that corresponds to it
+     * @param {LngLat} lnglat location
+     * @returns {Point} screen point
+     * @private
+     */</span>
+    locationPoint: <span class="keyword">function</span>(lnglat) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.coordinatePoint(<span class="keyword">this</span>.locationCoordinate(lnglat));
+    },
+
+    <span class="comment">/**
+     * Given a point on screen, return its lnglat
+     * @param {Point} p screen point
+     * @returns {LngLat} lnglat location
+     * @private
+     */</span>
+    pointLocation: <span class="keyword">function</span>(p) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.coordinateLocation(<span class="keyword">this</span>.pointCoordinate(p));
+    },
+
+    <span class="comment">/**
+     * Given a geographical lnglat, return an unrounded
+     * coordinate that represents it at this transform's zoom level and
+     * worldsize.
+     * @param {LngLat} lnglat
+     * @returns {Coordinate}
+     * @private
+     */</span>
+    locationCoordinate: <span class="keyword">function</span>(lnglat) {
+        <span class="keyword">var</span> k = <span class="keyword">this</span>.zoomScale(<span class="keyword">this</span>.tileZoom) / <span class="keyword">this</span>.worldSize,
+            ll = LngLat.convert(lnglat);
+
+        <span class="keyword">return</span> <span class="keyword">new</span> Coordinate(
+            <span class="keyword">this</span>.lngX(ll.lng) * k,
+            <span class="keyword">this</span>.latY(ll.lat) * k,
+            <span class="keyword">this</span>.tileZoom);
+    },
+
+    <span class="comment">/**
+     * Given a Coordinate, return its geographical position.
+     * @param {Coordinate} coord
+     * @returns {LngLat} lnglat
+     * @private
+     */</span>
+    coordinateLocation: <span class="keyword">function</span>(coord) {
+        <span class="keyword">var</span> worldSize = <span class="keyword">this</span>.zoomScale(coord.zoom);
+        <span class="keyword">return</span> <span class="keyword">new</span> LngLat(
+            <span class="keyword">this</span>.xLng(coord.column, worldSize),
+            <span class="keyword">this</span>.yLat(coord.row, worldSize));
+    },
+
+    pointCoordinate: <span class="keyword">function</span>(p) {
+
+        <span class="keyword">var</span> targetZ = <span class="number">0</span>;
+
+        <span class="keyword">var</span> matrix = <span class="keyword">this</span>.coordinatePointMatrix(<span class="keyword">this</span>.tileZoom);
+        mat4.invert(matrix, matrix);
+
+        <span class="keyword">if</span> (!matrix) <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">"failed to invert matrix"</span>);
+
+        <span class="comment">// since we don't know the correct projected z value for the point,</span>
+        <span class="comment">// unproject two points to get a line and then find the point on that</span>
+        <span class="comment">// line with z=0</span>
+
+        <span class="keyword">var</span> coord0 = [p.x, p.y, <span class="number">0</span>, <span class="number">1</span>];
+        <span class="keyword">var</span> coord1 = [p.x, p.y, <span class="number">1</span>, <span class="number">1</span>];
+
+        vec4.transformMat4(coord0, coord0, matrix);
+        vec4.transformMat4(coord1, coord1, matrix);
+
+        <span class="keyword">var</span> w0 = coord0[<span class="number">3</span>];
+        <span class="keyword">var</span> w1 = coord1[<span class="number">3</span>];
+        <span class="keyword">var</span> x0 = coord0[<span class="number">0</span>] / w0;
+        <span class="keyword">var</span> x1 = coord1[<span class="number">0</span>] / w1;
+        <span class="keyword">var</span> y0 = coord0[<span class="number">1</span>] / w0;
+        <span class="keyword">var</span> y1 = coord1[<span class="number">1</span>] / w1;
+        <span class="keyword">var</span> z0 = coord0[<span class="number">2</span>] / w0;
+        <span class="keyword">var</span> z1 = coord1[<span class="number">2</span>] / w1;
+
+
+        <span class="keyword">var</span> t = z0 === z1 ? <span class="number">0</span> : (targetZ - z0) / (z1 - z0);
+
+        <span class="keyword">return</span> <span class="keyword">new</span> Coordinate(
+            interp(x0, x1, t),
+            interp(y0, y1, t),
+            <span class="keyword">this</span>.tileZoom);
+    },
+
+    <span class="comment">/**
+     * Given a coordinate, return the screen point that corresponds to it
+     * @param {Coordinate} coord
+     * @returns {Point} screen point
+     * @private
+     */</span>
+    coordinatePoint: <span class="keyword">function</span>(coord) {
+        <span class="keyword">var</span> matrix = <span class="keyword">this</span>.coordinatePointMatrix(coord.zoom);
+        <span class="keyword">var</span> p = [coord.column, coord.row, <span class="number">0</span>, <span class="number">1</span>];
+        vec4.transformMat4(p, p, matrix);
+        <span class="keyword">return</span> <span class="keyword">new</span> Point(p[<span class="number">0</span>] / p[<span class="number">3</span>], p[<span class="number">1</span>] / p[<span class="number">3</span>]);
+    },
+
+    coordinatePointMatrix: <span class="keyword">function</span>(z) {
+        <span class="keyword">var</span> proj = mat4.copy(<span class="keyword">new</span> Float64Array(<span class="number">16</span>), <span class="keyword">this</span>.projMatrix);
+        <span class="keyword">var</span> scale = <span class="keyword">this</span>.worldSize / <span class="keyword">this</span>.zoomScale(z);
+        mat4.scale(proj, proj, [scale, scale, <span class="number">1</span>]);
+        mat4.multiply(proj, <span class="keyword">this</span>.getPixelMatrix(), proj);
+        <span class="keyword">return</span> proj;
+    },
+
+    <span class="comment">/**
+     * converts gl coordinates -1..1 to pixels 0..width
+     * @returns {Object} matrix
+     * @private
+     */</span>
+    getPixelMatrix: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> m = mat4.create();
+        mat4.scale(m, m, [<span class="keyword">this</span>.width / <span class="number">2</span>, -<span class="keyword">this</span>.height / <span class="number">2</span>, <span class="number">1</span>]);
+        mat4.translate(m, m, [<span class="number">1</span>, -<span class="number">1</span>, <span class="number">0</span>]);
+        <span class="keyword">return</span> m;
+    },
+
+    <span class="comment">/**
+     * Calculate the posMatrix that, given a tile coordinate, would be used to display the tile on a map.
+     * @param {TileCoord|Coordinate} coord
+     * @param {Number} maxZoom maximum source zoom to account for overscaling
+     * @private
+     */</span>
+    calculatePosMatrix: <span class="keyword">function</span>(coord, maxZoom) {
+        <span class="keyword">if</span> (maxZoom === <span class="literal">undefined</span>) maxZoom = <span class="literal">Infinity</span>;
+        <span class="keyword">if</span> (coord <span class="keyword">instanceof</span> TileCoord) coord = coord.toCoordinate(maxZoom);
+
+        <span class="comment">// Initialize model-view matrix that converts from the tile coordinates to screen coordinates.</span>
+
+        <span class="comment">// if z > maxzoom then the tile is actually a overscaled maxzoom tile,</span>
+        <span class="comment">// so calculate the matrix the maxzoom tile would use.</span>
+        <span class="keyword">var</span> z = Math.min(coord.zoom, maxZoom);
+
+        <span class="keyword">var</span> scale = <span class="keyword">this</span>.worldSize / Math.pow(<span class="number">2</span>, z);
+        <span class="keyword">var</span> posMatrix = <span class="keyword">new</span> Float64Array(<span class="number">16</span>);
+
+        mat4.identity(posMatrix);
+        mat4.translate(posMatrix, posMatrix, [coord.column * scale, coord.row * scale, <span class="number">0</span>]);
+        mat4.scale(posMatrix, posMatrix, [ scale / EXTENT, scale / EXTENT, <span class="number">1</span> ]);
+        mat4.multiply(posMatrix, <span class="keyword">this</span>.projMatrix, posMatrix);
+
+        <span class="keyword">return</span> <span class="keyword">new</span> Float32Array(posMatrix);
+    },
+
+    _constrain: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.center || !<span class="keyword">this</span>.width || !<span class="keyword">this</span>.height || <span class="keyword">this</span>._constraining) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._constraining = <span class="literal">true</span>;
+
+        <span class="keyword">var</span> minY, maxY, minX, maxX, sy, sx, x2, y2,
+            size = <span class="keyword">this</span>.size,
+            unmodified = <span class="keyword">this</span>._unmodified;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.latRange) {
+            minY = <span class="keyword">this</span>.latY(<span class="keyword">this</span>.latRange[<span class="number">1</span>]);
+            maxY = <span class="keyword">this</span>.latY(<span class="keyword">this</span>.latRange[<span class="number">0</span>]);
+            sy = maxY - minY &lt; size.y ? size.y / (maxY - minY) : <span class="number">0</span>;
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.lngRange) {
+            minX = <span class="keyword">this</span>.lngX(<span class="keyword">this</span>.lngRange[<span class="number">0</span>]);
+            maxX = <span class="keyword">this</span>.lngX(<span class="keyword">this</span>.lngRange[<span class="number">1</span>]);
+            sx = maxX - minX &lt; size.x ? size.x / (maxX - minX) : <span class="number">0</span>;
+        }
+
+        <span class="comment">// how much the map should scale to fit the screen into given latitude/longitude ranges</span>
+        <span class="keyword">var</span> s = Math.max(sx || <span class="number">0</span>, sy || <span class="number">0</span>);
+
+        <span class="keyword">if</span> (s) {
+            <span class="keyword">this</span>.center = <span class="keyword">this</span>.unproject(<span class="keyword">new</span> Point(
+                sx ? (maxX + minX) / <span class="number">2</span> : <span class="keyword">this</span>.x,
+                sy ? (maxY + minY) / <span class="number">2</span> : <span class="keyword">this</span>.y));
+            <span class="keyword">this</span>.zoom += <span class="keyword">this</span>.scaleZoom(s);
+            <span class="keyword">this</span>._unmodified = unmodified;
+            <span class="keyword">this</span>._constraining = <span class="literal">false</span>;
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.latRange) {
+            <span class="keyword">var</span> y = <span class="keyword">this</span>.y,
+                h2 = size.y / <span class="number">2</span>;
+
+            <span class="keyword">if</span> (y - h2 &lt; minY) y2 = minY + h2;
+            <span class="keyword">if</span> (y + h2 > maxY) y2 = maxY - h2;
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.lngRange) {
+            <span class="keyword">var</span> x = <span class="keyword">this</span>.x,
+                w2 = size.x / <span class="number">2</span>;
+
+            <span class="keyword">if</span> (x - w2 &lt; minX) x2 = minX + w2;
+            <span class="keyword">if</span> (x + w2 > maxX) x2 = maxX - w2;
+        }
+
+        <span class="comment">// pan the map if the screen goes off the range</span>
+        <span class="keyword">if</span> (x2 !== <span class="literal">undefined</span> || y2 !== <span class="literal">undefined</span>) {
+            <span class="keyword">this</span>.center = <span class="keyword">this</span>.unproject(<span class="keyword">new</span> Point(
+                x2 !== <span class="literal">undefined</span> ? x2 : <span class="keyword">this</span>.x,
+                y2 !== <span class="literal">undefined</span> ? y2 : <span class="keyword">this</span>.y));
+        }
+
+        <span class="keyword">this</span>._unmodified = unmodified;
+        <span class="keyword">this</span>._constraining = <span class="literal">false</span>;
+    },
+
+    _calcProjMatrix: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> m = <span class="keyword">new</span> Float64Array(<span class="number">16</span>);
+
+        <span class="comment">// Find the distance from the center point to the center top in altitude units using law of sines.</span>
+        <span class="keyword">var</span> halfFov = Math.atan(<span class="number">0.5</span> / <span class="keyword">this</span>.altitude);
+        <span class="keyword">var</span> topHalfSurfaceDistance = Math.sin(halfFov) * <span class="keyword">this</span>.altitude / Math.sin(Math.PI / <span class="number">2</span> - <span class="keyword">this</span>._pitch - halfFov);
+
+        <span class="comment">// Calculate z value of the farthest fragment that should be rendered.</span>
+        <span class="keyword">var</span> farZ = Math.cos(Math.PI / <span class="number">2</span> - <span class="keyword">this</span>._pitch) * topHalfSurfaceDistance + <span class="keyword">this</span>.altitude;
+
+        mat4.perspective(m, <span class="number">2</span> * Math.atan((<span class="keyword">this</span>.height / <span class="number">2</span>) / <span class="keyword">this</span>.altitude), <span class="keyword">this</span>.width / <span class="keyword">this</span>.height, <span class="number">0.1</span>, farZ);
+
+        mat4.translate(m, m, [<span class="number">0</span>, <span class="number">0</span>, -<span class="keyword">this</span>.altitude]);
+
+        <span class="comment">// After the rotateX, z values are in pixel units. Convert them to</span>
+        <span class="comment">// altitude units. 1 altitude unit = the screen height.</span>
+        mat4.scale(m, m, [<span class="number">1</span>, -<span class="number">1</span>, <span class="number">1</span> / <span class="keyword">this</span>.height]);
+
+        mat4.rotateX(m, m, <span class="keyword">this</span>._pitch);
+        mat4.rotateZ(m, m, <span class="keyword">this</span>.angle);
+        mat4.translate(m, m, [-<span class="keyword">this</span>.x, -<span class="keyword">this</span>.y, <span class="number">0</span>]);
+
+        <span class="keyword">this</span>.projMatrix = m;
+    }
+};
+</code></pre>

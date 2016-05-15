@@ -1,0 +1,27 @@
+<h1>style_function.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> MapboxGLFunction = require(<span class="string">'mapbox-gl-function'</span>);
+
+exports.interpolated = <span class="keyword">function</span>(parameters) {
+    <span class="keyword">var</span> inner = MapboxGLFunction.interpolated(parameters);
+    <span class="keyword">var</span> outer = <span class="keyword">function</span>(globalProperties, featureProperties) {
+        <span class="keyword">return</span> inner(globalProperties &amp;&amp; globalProperties.zoom, featureProperties || {});
+    };
+    outer.isFeatureConstant = inner.isFeatureConstant;
+    outer.isZoomConstant = inner.isZoomConstant;
+    <span class="keyword">return</span> outer;
+};
+
+exports[<span class="string">'piecewise-constant'</span>] = <span class="keyword">function</span>(parameters) {
+    <span class="keyword">var</span> inner = MapboxGLFunction[<span class="string">'piecewise-constant'</span>](parameters);
+    <span class="keyword">var</span> outer = <span class="keyword">function</span>(globalProperties, featureProperties) {
+        <span class="keyword">return</span> inner(globalProperties &amp;&amp; globalProperties.zoom, featureProperties || {});
+    };
+    outer.isFeatureConstant = inner.isFeatureConstant;
+    outer.isZoomConstant = inner.isZoomConstant;
+    <span class="keyword">return</span> outer;
+};
+
+exports.isFunctionDefinition = MapboxGLFunction.isFunctionDefinition;
+</code></pre>

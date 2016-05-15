@@ -1,0 +1,75 @@
+<h1>hash.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="comment">/*
+ * Adds the map's position to its page's location hash.
+ * Passed as an option to the map object.
+ *
+ * @class mapboxgl.Hash
+ * @returns {Hash} `this`
+ */</span>
+module.exports = Hash;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+
+<span class="function"><span class="keyword">function</span> <span class="title">Hash</span><span class="params">()</span> {</span>
+    util.bindAll([
+        <span class="string">'_onHashChange'</span>,
+        <span class="string">'_updateHash'</span>
+    ], <span class="keyword">this</span>);
+}
+
+Hash.prototype = {
+    <span class="comment">/*
+     * Map element to listen for coordinate changes
+     *
+     * @param {Object} map
+     * @returns {Hash} `this`
+     */</span>
+    addTo: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>._map = map;
+        window.addEventListener(<span class="string">'hashchange'</span>, <span class="keyword">this</span>._onHashChange, <span class="literal">false</span>);
+        <span class="keyword">this</span>._map.on(<span class="string">'moveend'</span>, <span class="keyword">this</span>._updateHash);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/*
+     * Removes hash
+     *
+     * @returns {Popup} `this`
+     */</span>
+    remove: <span class="keyword">function</span>() {
+        window.removeEventListener(<span class="string">'hashchange'</span>, <span class="keyword">this</span>._onHashChange, <span class="literal">false</span>);
+        <span class="keyword">this</span>._map.off(<span class="string">'moveend'</span>, <span class="keyword">this</span>._updateHash);
+        <span class="keyword">delete</span> <span class="keyword">this</span>._map;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _onHashChange: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> loc = location.hash.replace(<span class="string">'#'</span>, <span class="string">''</span>).split(<span class="string">'/'</span>);
+        <span class="keyword">if</span> (loc.length >= <span class="number">3</span>) {
+            <span class="keyword">this</span>._map.jumpTo({
+                center: [+loc[<span class="number">2</span>], +loc[<span class="number">1</span>]],
+                zoom: +loc[<span class="number">0</span>],
+                bearing: +(loc[<span class="number">3</span>] || <span class="number">0</span>)
+            });
+            <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+        <span class="keyword">return</span> <span class="literal">false</span>;
+    },
+
+    _updateHash: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> center = <span class="keyword">this</span>._map.getCenter(),
+            zoom = <span class="keyword">this</span>._map.getZoom(),
+            bearing = <span class="keyword">this</span>._map.getBearing(),
+            precision = Math.max(<span class="number">0</span>, Math.ceil(Math.log(zoom) / Math.LN2)),
+
+            hash = <span class="string">'#'</span> + (Math.round(zoom * <span class="number">100</span>) / <span class="number">100</span>) +
+                <span class="string">'/'</span> + center.lat.toFixed(precision) +
+                <span class="string">'/'</span> + center.lng.toFixed(precision) +
+                (bearing ? <span class="string">'/'</span> + (Math.round(bearing * <span class="number">10</span>) / <span class="number">10</span>) : <span class="string">''</span>);
+
+        window.history.replaceState(<span class="string">''</span>, <span class="string">''</span>, hash);
+    }
+};
+</code></pre>

@@ -1,0 +1,128 @@
+<h1>vector_tile_source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> Source = require(<span class="string">'./source'</span>);
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeTileURL;
+
+module.exports = VectorTileSource;
+
+<span class="function"><span class="keyword">function</span> <span class="title">VectorTileSource</span><span class="params">(options)</span> {</span>
+    util.extend(<span class="keyword">this</span>, util.pick(options, [<span class="string">'url'</span>, <span class="string">'tileSize'</span>]));
+    <span class="keyword">this</span>._options = util.extend({ type: <span class="string">'vector'</span> }, options);
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.tileSize !== <span class="number">512</span>) {
+        <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'vector tile sources must have a tileSize of 512'</span>);
+    }
+
+    Source._loadTileJSON.call(<span class="keyword">this</span>, options);
+}
+
+VectorTileSource.prototype = util.inherit(Evented, {
+    minzoom: <span class="number">0</span>,
+    maxzoom: <span class="number">22</span>,
+    tileSize: <span class="number">512</span>,
+    reparseOverscaled: <span class="literal">true</span>,
+    _loaded: <span class="literal">false</span>,
+    isTileClipped: <span class="literal">true</span>,
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>.map = map;
+    },
+
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._pyramid &amp;&amp; <span class="keyword">this</span>._pyramid.loaded();
+    },
+
+    update: <span class="keyword">function</span>(transform) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._pyramid) {
+            <span class="keyword">this</span>._pyramid.update(<span class="keyword">this</span>.used, transform);
+        }
+    },
+
+    reload: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._pyramid) {
+            <span class="keyword">this</span>._pyramid.reload();
+        }
+    },
+
+    serialize: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> util.extend({}, <span class="keyword">this</span>._options);
+    },
+
+    getVisibleCoordinates: Source._getVisibleCoordinates,
+    getTile: Source._getTile,
+
+    queryRenderedFeatures: Source._queryRenderedVectorFeatures,
+    querySourceFeatures: Source._querySourceFeatures,
+
+    _loadTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">var</span> overscaling = tile.coord.z > <span class="keyword">this</span>.maxzoom ? Math.pow(<span class="number">2</span>, tile.coord.z - <span class="keyword">this</span>.maxzoom) : <span class="number">1</span>;
+        <span class="keyword">var</span> params = {
+            url: normalizeURL(tile.coord.url(<span class="keyword">this</span>.tiles, <span class="keyword">this</span>.maxzoom), <span class="keyword">this</span>.url),
+            uid: tile.uid,
+            coord: tile.coord,
+            zoom: tile.coord.z,
+            tileSize: <span class="keyword">this</span>.tileSize * overscaling,
+            source: <span class="keyword">this</span>.id,
+            overscaling: overscaling,
+            angle: <span class="keyword">this</span>.map.transform.angle,
+            pitch: <span class="keyword">this</span>.map.transform.pitch,
+            showCollisionBoxes: <span class="keyword">this</span>.map.showCollisionBoxes
+        };
+
+        <span class="keyword">if</span> (tile.workerID) {
+            params.rawTileData = tile.rawTileData;
+            <span class="keyword">this</span>.dispatcher.send(<span class="string">'reload tile'</span>, params, <span class="keyword">this</span>._tileLoaded.bind(<span class="keyword">this</span>, tile), tile.workerID);
+        } <span class="keyword">else</span> {
+            tile.workerID = <span class="keyword">this</span>.dispatcher.send(<span class="string">'load tile'</span>, params, <span class="keyword">this</span>._tileLoaded.bind(<span class="keyword">this</span>, tile));
+        }
+    },
+
+    _tileLoaded: <span class="keyword">function</span>(tile, err, data) {
+        <span class="keyword">if</span> (tile.aborted)
+            <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (err) {
+            tile.errored = <span class="literal">true</span>;
+            <span class="keyword">this</span>.fire(<span class="string">'tile.error'</span>, {tile: tile, error: err});
+            <span class="keyword">return</span>;
+        }
+
+        tile.loadVectorData(data, <span class="keyword">this</span>.map.style);
+
+        <span class="keyword">if</span> (tile.redoWhenDone) {
+            tile.redoWhenDone = <span class="literal">false</span>;
+            tile.redoPlacement(<span class="keyword">this</span>);
+        }
+
+        <span class="keyword">this</span>.fire(<span class="string">'tile.load'</span>, {tile: tile});
+        <span class="keyword">this</span>.fire(<span class="string">'tile.stats'</span>, data.bucketStats);
+    },
+
+    _abortTile: <span class="keyword">function</span>(tile) {
+        tile.aborted = <span class="literal">true</span>;
+        <span class="keyword">this</span>.dispatcher.send(<span class="string">'abort tile'</span>, { uid: tile.uid, source: <span class="keyword">this</span>.id }, <span class="literal">null</span>, tile.workerID);
+    },
+
+    _addTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.add'</span>, {tile: tile});
+    },
+
+    _removeTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.remove'</span>, {tile: tile});
+    },
+
+    _unloadTile: <span class="keyword">function</span>(tile) {
+        tile.unloadVectorData(<span class="keyword">this</span>.map.painter);
+        <span class="keyword">this</span>.dispatcher.send(<span class="string">'remove tile'</span>, { uid: tile.uid, source: <span class="keyword">this</span>.id }, <span class="literal">null</span>, tile.workerID);
+    },
+
+    redoPlacement: Source.redoPlacement,
+
+    _redoTilePlacement: <span class="keyword">function</span>(tile) {
+        tile.redoPlacement(<span class="keyword">this</span>);
+    }
+});
+</code></pre>

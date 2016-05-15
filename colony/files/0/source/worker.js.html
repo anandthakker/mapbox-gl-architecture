@@ -1,0 +1,245 @@
+<h1>worker.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Actor = require(<span class="string">'../util/actor'</span>);
+<span class="keyword">var</span> WorkerTile = require(<span class="string">'./worker_tile'</span>);
+<span class="keyword">var</span> StyleLayer = require(<span class="string">'../style/style_layer'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> vt = require(<span class="string">'vector-tile'</span>);
+<span class="keyword">var</span> Protobuf = require(<span class="string">'pbf'</span>);
+<span class="keyword">var</span> supercluster = require(<span class="string">'supercluster'</span>);
+
+<span class="keyword">var</span> geojsonvt = require(<span class="string">'geojson-vt'</span>);
+<span class="keyword">var</span> rewind = require(<span class="string">'geojson-rewind'</span>);
+<span class="keyword">var</span> GeoJSONWrapper = require(<span class="string">'./geojson_wrapper'</span>);
+<span class="keyword">var</span> vtpbf = require(<span class="string">'vt-pbf'</span>);
+
+module.exports = <span class="keyword">function</span>(self) {
+    <span class="keyword">return</span> <span class="keyword">new</span> Worker(self);
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">Worker</span><span class="params">(self)</span> {</span>
+    <span class="keyword">this</span>.self = self;
+    <span class="keyword">this</span>.actor = <span class="keyword">new</span> Actor(self, <span class="keyword">this</span>);
+    <span class="keyword">this</span>.loading = {};
+
+    <span class="keyword">this</span>.loaded = {};
+    <span class="keyword">this</span>.geoJSONIndexes = {};
+}
+
+util.extend(Worker.prototype, {
+    <span class="string">'set layers'</span>: <span class="keyword">function</span>(layers) {
+        <span class="keyword">this</span>.layers = {};
+        <span class="keyword">var</span> that = <span class="keyword">this</span>;
+
+        <span class="comment">// Filter layers and create an id -> layer map</span>
+        <span class="keyword">var</span> childLayerIndicies = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; layers.length; i++) {
+            <span class="keyword">var</span> layer = layers[i];
+            <span class="keyword">if</span> (layer.type === <span class="string">'fill'</span> || layer.type === <span class="string">'line'</span> || layer.type === <span class="string">'circle'</span> || layer.type === <span class="string">'symbol'</span>) {
+                <span class="keyword">if</span> (layer.ref) {
+                    childLayerIndicies.push(i);
+                } <span class="keyword">else</span> {
+                    setLayer(layer);
+                }
+            }
+        }
+
+        <span class="comment">// Create an instance of StyleLayer per layer</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; childLayerIndicies.length; j++) {
+            setLayer(layers[childLayerIndicies[j]]);
+        }
+
+        <span class="function"><span class="keyword">function</span> <span class="title">setLayer</span><span class="params">(serializedLayer)</span> {</span>
+            <span class="keyword">var</span> styleLayer = StyleLayer.create(
+                serializedLayer,
+                serializedLayer.ref &amp;&amp; that.layers[serializedLayer.ref]
+            );
+            styleLayer.updatePaintTransitions({}, {transition: <span class="literal">false</span>});
+            that.layers[styleLayer.id] = styleLayer;
+        }
+
+        <span class="keyword">this</span>.layerFamilies = createLayerFamilies(<span class="keyword">this</span>.layers);
+    },
+
+    <span class="string">'update layers'</span>: <span class="keyword">function</span>(layers) {
+        <span class="keyword">var</span> that = <span class="keyword">this</span>;
+        <span class="keyword">var</span> id;
+        <span class="keyword">var</span> layer;
+
+        <span class="comment">// Update ref parents</span>
+        <span class="keyword">for</span> (id <span class="keyword">in</span> layers) {
+            layer = layers[id];
+            <span class="keyword">if</span> (layer.ref) updateLayer(layer);
+        }
+
+        <span class="comment">// Update ref children</span>
+        <span class="keyword">for</span> (id <span class="keyword">in</span> layers) {
+            layer = layers[id];
+            <span class="keyword">if</span> (!layer.ref) updateLayer(layer);
+        }
+
+        <span class="function"><span class="keyword">function</span> <span class="title">updateLayer</span><span class="params">(layer)</span> {</span>
+            <span class="keyword">var</span> refLayer = that.layers[layer.ref];
+            <span class="keyword">if</span> (that.layers[layer.id]) {
+                that.layers[layer.id].set(layer, refLayer);
+            } <span class="keyword">else</span> {
+                that.layers[layer.id] = StyleLayer.create(layer, refLayer);
+            }
+            that.layers[layer.id].updatePaintTransitions({}, {transition: <span class="literal">false</span>});
+        }
+
+        <span class="keyword">this</span>.layerFamilies = createLayerFamilies(<span class="keyword">this</span>.layers);
+    },
+
+    <span class="string">'load tile'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> source = params.source,
+            uid = params.uid;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.loading[source])
+            <span class="keyword">this</span>.loading[source] = {};
+
+
+        <span class="keyword">var</span> tile = <span class="keyword">this</span>.loading[source][uid] = <span class="keyword">new</span> WorkerTile(params);
+
+        tile.xhr = ajax.getArrayBuffer(params.url, done.bind(<span class="keyword">this</span>));
+
+        <span class="function"><span class="keyword">function</span> <span class="title">done</span><span class="params">(err, data)</span> {</span>
+            <span class="keyword">delete</span> <span class="keyword">this</span>.loading[source][uid];
+
+            <span class="keyword">if</span> (err) <span class="keyword">return</span> callback(err);
+
+            tile.data = <span class="keyword">new</span> vt.VectorTile(<span class="keyword">new</span> Protobuf(<span class="keyword">new</span> Uint8Array(data)));
+            tile.parse(tile.data, <span class="keyword">this</span>.layerFamilies, <span class="keyword">this</span>.actor, data, callback);
+
+            <span class="keyword">this</span>.loaded[source] = <span class="keyword">this</span>.loaded[source] || {};
+            <span class="keyword">this</span>.loaded[source][uid] = tile;
+        }
+    },
+
+    <span class="string">'reload tile'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> loaded = <span class="keyword">this</span>.loaded[params.source],
+            uid = params.uid;
+        <span class="keyword">if</span> (loaded &amp;&amp; loaded[uid]) {
+            <span class="keyword">var</span> tile = loaded[uid];
+            tile.parse(tile.data, <span class="keyword">this</span>.layerFamilies, <span class="keyword">this</span>.actor, params.rawTileData, callback);
+        }
+    },
+
+    <span class="string">'abort tile'</span>: <span class="keyword">function</span>(params) {
+        <span class="keyword">var</span> loading = <span class="keyword">this</span>.loading[params.source],
+            uid = params.uid;
+        <span class="keyword">if</span> (loading &amp;&amp; loading[uid]) {
+            loading[uid].xhr.abort();
+            <span class="keyword">delete</span> loading[uid];
+        }
+    },
+
+    <span class="string">'remove tile'</span>: <span class="keyword">function</span>(params) {
+        <span class="keyword">var</span> loaded = <span class="keyword">this</span>.loaded[params.source],
+            uid = params.uid;
+        <span class="keyword">if</span> (loaded &amp;&amp; loaded[uid]) {
+            <span class="keyword">delete</span> loaded[uid];
+        }
+    },
+
+    <span class="string">'redo placement'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> loaded = <span class="keyword">this</span>.loaded[params.source],
+            loading = <span class="keyword">this</span>.loading[params.source],
+            uid = params.uid;
+
+        <span class="keyword">if</span> (loaded &amp;&amp; loaded[uid]) {
+            <span class="keyword">var</span> tile = loaded[uid];
+            <span class="keyword">var</span> result = tile.redoPlacement(params.angle, params.pitch, params.showCollisionBoxes);
+
+            <span class="keyword">if</span> (result.result) {
+                callback(<span class="literal">null</span>, result.result, result.transferables);
+            }
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (loading &amp;&amp; loading[uid]) {
+            loading[uid].angle = params.angle;
+        }
+    },
+
+    <span class="string">'parse geojson'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> indexData = <span class="keyword">function</span>(err, data) {
+            rewind(data, <span class="literal">true</span>);
+            <span class="keyword">if</span> (err) <span class="keyword">return</span> callback(err);
+            <span class="keyword">if</span> (<span class="keyword">typeof</span> data != <span class="string">'object'</span>) {
+                <span class="keyword">return</span> callback(<span class="keyword">new</span> Error(<span class="string">"Input data is not a valid GeoJSON object."</span>));
+            }
+            <span class="keyword">try</span> {
+                <span class="keyword">this</span>.geoJSONIndexes[params.source] = params.cluster ?
+                    supercluster(params.superclusterOptions).load(data.features) :
+                    geojsonvt(data, params.geojsonVtOptions);
+            } <span class="keyword">catch</span> (err) {
+                <span class="keyword">return</span> callback(err);
+            }
+            callback(<span class="literal">null</span>);
+        }.bind(<span class="keyword">this</span>);
+
+        <span class="comment">// Not, because of same origin issues, urls must either include an</span>
+        <span class="comment">// explicit origin or absolute path.</span>
+        <span class="comment">// ie: /foo/bar.json or http://example.com/bar.json</span>
+        <span class="comment">// but not ../foo/bar.json</span>
+        <span class="keyword">if</span> (params.url) {
+            ajax.getJSON(params.url, indexData);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (<span class="keyword">typeof</span> params.data === <span class="string">'string'</span>) {
+            indexData(<span class="literal">null</span>, JSON.parse(params.data));
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> callback(<span class="keyword">new</span> Error(<span class="string">"Input data is not a valid GeoJSON object."</span>));
+        }
+    },
+
+    <span class="string">'load geojson tile'</span>: <span class="keyword">function</span>(params, callback) {
+        <span class="keyword">var</span> source = params.source,
+            coord = params.coord;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.geoJSONIndexes[source]) <span class="keyword">return</span> callback(<span class="literal">null</span>, <span class="literal">null</span>); <span class="comment">// we couldn't load the file</span>
+
+        <span class="comment">// console.time('tile ' + coord.z + ' ' + coord.x + ' ' + coord.y);</span>
+
+        <span class="keyword">var</span> geoJSONTile = <span class="keyword">this</span>.geoJSONIndexes[source].getTile(Math.min(coord.z, params.maxZoom), coord.x, coord.y);
+
+        <span class="comment">// console.timeEnd('tile ' + coord.z + ' ' + coord.x + ' ' + coord.y);</span>
+
+        <span class="comment">// if (!geoJSONTile) console.log('not found', this.geoJSONIndexes[source], coord);</span>
+
+        <span class="keyword">var</span> tile = geoJSONTile ? <span class="keyword">new</span> WorkerTile(params) : <span class="literal">undefined</span>;
+
+        <span class="keyword">this</span>.loaded[source] = <span class="keyword">this</span>.loaded[source] || {};
+        <span class="keyword">this</span>.loaded[source][params.uid] = tile;
+
+        <span class="keyword">if</span> (geoJSONTile) {
+            <span class="keyword">var</span> geojsonWrapper = <span class="keyword">new</span> GeoJSONWrapper(geoJSONTile.features);
+            geojsonWrapper.name = <span class="string">'_geojsonTileLayer'</span>;
+            <span class="keyword">var</span> rawTileData = vtpbf({ layers: { <span class="string">'_geojsonTileLayer'</span>: geojsonWrapper }}).buffer;
+            tile.parse(geojsonWrapper, <span class="keyword">this</span>.layerFamilies, <span class="keyword">this</span>.actor, rawTileData, callback);
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> callback(<span class="literal">null</span>, <span class="literal">null</span>); <span class="comment">// nothing in the given tile</span>
+        }
+    }
+});
+
+<span class="function"><span class="keyword">function</span> <span class="title">createLayerFamilies</span><span class="params">(layers)</span> {</span>
+    <span class="keyword">var</span> families = {};
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> layerId <span class="keyword">in</span> layers) {
+        <span class="keyword">var</span> layer = layers[layerId];
+        <span class="keyword">var</span> parentLayerId = layer.ref || layer.id;
+        <span class="keyword">var</span> parentLayer = layers[parentLayerId];
+
+        <span class="keyword">if</span> (parentLayer.layout &amp;&amp; parentLayer.layout.visibility === <span class="string">'none'</span>) <span class="keyword">continue</span>;
+
+        families[parentLayerId] = families[parentLayerId] || [];
+        <span class="keyword">if</span> (layerId === parentLayerId) {
+            families[parentLayerId].unshift(layer);
+        } <span class="keyword">else</span> {
+            families[parentLayerId].push(layer);
+        }
+    }
+
+    <span class="keyword">return</span> families;
+}
+</code></pre>

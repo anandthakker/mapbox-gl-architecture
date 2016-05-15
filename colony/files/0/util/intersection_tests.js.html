@@ -1,0 +1,166 @@
+<h1>intersection_tests.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = {
+    multiPolygonIntersectsBufferedMultiPoint: multiPolygonIntersectsBufferedMultiPoint,
+    multiPolygonIntersectsMultiPolygon: multiPolygonIntersectsMultiPolygon,
+    multiPolygonIntersectsBufferedMultiLine: multiPolygonIntersectsBufferedMultiLine
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">multiPolygonIntersectsBufferedMultiPoint</span><span class="params">(multiPolygon, rings, radius)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; multiPolygon.length; j++) {
+        <span class="keyword">var</span> polygon = multiPolygon[j];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; rings.length; i++) {
+            <span class="keyword">var</span> ring = rings[i];
+            <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; ring.length; k++) {
+                <span class="keyword">var</span> point = ring[k];
+                <span class="keyword">if</span> (polygonContainsPoint(polygon, point)) <span class="keyword">return</span> <span class="literal">true</span>;
+                <span class="keyword">if</span> (pointIntersectsBufferedLine(point, polygon, radius)) <span class="keyword">return</span> <span class="literal">true</span>;
+            }
+        }
+    }
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">multiPolygonIntersectsMultiPolygon</span><span class="params">(multiPolygonA, multiPolygonB)</span> {</span>
+
+    <span class="keyword">if</span> (multiPolygonA.length === <span class="number">1</span> &amp;&amp; multiPolygonA[<span class="number">0</span>].length === <span class="number">1</span>) {
+        <span class="keyword">return</span> multiPolygonContainsPoint(multiPolygonB, multiPolygonA[<span class="number">0</span>][<span class="number">0</span>]);
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> m = <span class="number">0</span>; m &lt; multiPolygonB.length; m++) {
+        <span class="keyword">var</span> ring = multiPolygonB[m];
+        <span class="keyword">for</span> (<span class="keyword">var</span> n = <span class="number">0</span>; n &lt; ring.length; n++) {
+            <span class="keyword">if</span> (multiPolygonContainsPoint(multiPolygonA, ring[n])) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; multiPolygonA.length; j++) {
+        <span class="keyword">var</span> polygon = multiPolygonA[j];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; polygon.length; i++) {
+            <span class="keyword">if</span> (multiPolygonContainsPoint(multiPolygonB, polygon[i])) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; multiPolygonB.length; k++) {
+            <span class="keyword">if</span> (lineIntersectsLine(polygon, multiPolygonB[k])) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">multiPolygonIntersectsBufferedMultiLine</span><span class="params">(multiPolygon, multiLine, radius)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; multiLine.length; i++) {
+        <span class="keyword">var</span> line = multiLine[i];
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; multiPolygon.length; j++) {
+            <span class="keyword">var</span> polygon = multiPolygon[j];
+
+            <span class="keyword">if</span> (polygon.length >= <span class="number">3</span>) {
+                <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; line.length; k++) {
+                    <span class="keyword">if</span> (polygonContainsPoint(polygon, line[k])) <span class="keyword">return</span> <span class="literal">true</span>;
+                }
+            }
+
+            <span class="keyword">if</span> (lineIntersectsBufferedLine(polygon, line, radius)) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">lineIntersectsBufferedLine</span><span class="params">(lineA, lineB, radius)</span> {</span>
+
+    <span class="keyword">if</span> (lineA.length > <span class="number">1</span>) {
+        <span class="keyword">if</span> (lineIntersectsLine(lineA, lineB)) <span class="keyword">return</span> <span class="literal">true</span>;
+
+        <span class="comment">// Check whether any point in either line is within radius of the other line</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; lineB.length; j++) {
+            <span class="keyword">if</span> (pointIntersectsBufferedLine(lineB[j], lineA, radius)) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; lineA.length; k++) {
+        <span class="keyword">if</span> (pointIntersectsBufferedLine(lineA[k], lineB, radius)) <span class="keyword">return</span> <span class="literal">true</span>;
+    }
+
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">lineIntersectsLine</span><span class="params">(lineA, lineB)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; lineA.length - <span class="number">1</span>; i++) {
+        <span class="keyword">var</span> a0 = lineA[i];
+        <span class="keyword">var</span> a1 = lineA[i + <span class="number">1</span>];
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; lineB.length - <span class="number">1</span>; j++) {
+            <span class="keyword">var</span> b0 = lineB[j];
+            <span class="keyword">var</span> b1 = lineB[j + <span class="number">1</span>];
+            <span class="keyword">if</span> (lineSegmentIntersectsLineSegment(a0, a1, b0, b1)) <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+
+<span class="comment">// http://bryceboe.com/2006/10/23/line-segment-intersection-algorithm/</span>
+<span class="function"><span class="keyword">function</span> <span class="title">isCounterClockwise</span><span class="params">(a, b, c)</span> {</span>
+    <span class="keyword">return</span> (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">lineSegmentIntersectsLineSegment</span><span class="params">(a0, a1, b0, b1)</span> {</span>
+    <span class="keyword">return</span> isCounterClockwise(a0, b0, b1) !== isCounterClockwise(a1, b0, b1) &amp;&amp;
+        isCounterClockwise(a0, a1, b0) !== isCounterClockwise(a0, a1, b1);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">pointIntersectsBufferedLine</span><span class="params">(p, line, radius)</span> {</span>
+    <span class="keyword">var</span> radiusSquared = radius * radius;
+
+    <span class="keyword">if</span> (line.length === <span class="number">1</span>) <span class="keyword">return</span> p.distSqr(line[<span class="number">0</span>]) &lt; radiusSquared;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">1</span>; i &lt; line.length; i++) {
+        <span class="comment">// Find line segments that have a distance &lt;= radius^2 to p</span>
+        <span class="comment">// In that case, we treat the line as "containing point p".</span>
+        <span class="keyword">var</span> v = line[i - <span class="number">1</span>], w = line[i];
+        <span class="keyword">if</span> (distToSegmentSquared(p, v, w) &lt; radiusSquared) <span class="keyword">return</span> <span class="literal">true</span>;
+    }
+    <span class="keyword">return</span> <span class="literal">false</span>;
+}
+
+<span class="comment">// Code from http://stackoverflow.com/a/1501725/331379.</span>
+<span class="function"><span class="keyword">function</span> <span class="title">distToSegmentSquared</span><span class="params">(p, v, w)</span> {</span>
+    <span class="keyword">var</span> l2 = v.distSqr(w);
+    <span class="keyword">if</span> (l2 === <span class="number">0</span>) <span class="keyword">return</span> p.distSqr(v);
+    <span class="keyword">var</span> t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+    <span class="keyword">if</span> (t &lt; <span class="number">0</span>) <span class="keyword">return</span> p.distSqr(v);
+    <span class="keyword">if</span> (t > <span class="number">1</span>) <span class="keyword">return</span> p.distSqr(w);
+    <span class="keyword">return</span> p.distSqr(w.sub(v)._mult(t)._add(v));
+}
+
+<span class="comment">// point in polygon ray casting algorithm</span>
+<span class="function"><span class="keyword">function</span> <span class="title">multiPolygonContainsPoint</span><span class="params">(rings, p)</span> {</span>
+    <span class="keyword">var</span> c = <span class="literal">false</span>,
+        ring, p1, p2;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; rings.length; k++) {
+        ring = rings[k];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>, j = ring.length - <span class="number">1</span>; i &lt; ring.length; j = i++) {
+            p1 = ring[i];
+            p2 = ring[j];
+            <span class="keyword">if</span> (((p1.y > p.y) !== (p2.y > p.y)) &amp;&amp; (p.x &lt; (p2.x - p1.x) * (p.y - p1.y) / (p2.y - p1.y) + p1.x)) {
+                c = !c;
+            }
+        }
+    }
+    <span class="keyword">return</span> c;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">polygonContainsPoint</span><span class="params">(ring, p)</span> {</span>
+    <span class="keyword">var</span> c = <span class="literal">false</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>, j = ring.length - <span class="number">1</span>; i &lt; ring.length; j = i++) {
+        <span class="keyword">var</span> p1 = ring[i];
+        <span class="keyword">var</span> p2 = ring[j];
+        <span class="keyword">if</span> (((p1.y > p.y) !== (p2.y > p.y)) &amp;&amp; (p.x &lt; (p2.x - p1.x) * (p.y - p1.y) / (p2.y - p1.y) + p1.x)) {
+            c = !c;
+        }
+    }
+    <span class="keyword">return</span> c;
+}
+</code></pre>

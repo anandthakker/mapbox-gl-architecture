@@ -1,0 +1,94 @@
+<h1>lng_lat.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = LngLat;
+
+<span class="keyword">var</span> wrap = require(<span class="string">'../util/util'</span>).wrap;
+
+<span class="comment">/**
+ * Create a longitude, latitude object from a given longitude and latitude pair in degrees.
+ * Mapbox GL uses Longitude, Latitude coordinate order to match GeoJSON.
+ *
+ * Note that any Mapbox GL method that accepts a `LngLat` object can also accept an
+ * `Array` and will perform an implicit conversion.  The following lines are equivalent:
+ ```
+ map.setCenter([-73.9749, 40.7736]);
+ map.setCenter( new mapboxgl.LngLat(-73.9749, 40.7736) );
+ ```
+ *
+ * @class LngLat
+ * @classdesc A representation of a longitude, latitude point, in degrees.
+ * @param {number} lng longitude
+ * @param {number} lat latitude
+ * @example
+ * var ll = new mapboxgl.LngLat(-73.9749, 40.7736);
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">LngLat</span><span class="params">(lng, lat)</span> {</span>
+    <span class="keyword">if</span> (isNaN(lng) || isNaN(lat)) {
+        <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Invalid LngLat object: ('</span> + lng + <span class="string">', '</span> + lat + <span class="string">')'</span>);
+    }
+    <span class="keyword">this</span>.lng = +lng;
+    <span class="keyword">this</span>.lat = +lat;
+    <span class="keyword">if</span> (<span class="keyword">this</span>.lat > <span class="number">90</span> || <span class="keyword">this</span>.lat &lt; -<span class="number">90</span>) {
+        <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Invalid LngLat latitude value: must be between -90 and 90'</span>);
+    }
+}
+
+<span class="comment">/**
+ * Return a new `LngLat` object whose longitude is wrapped to the range (-180, 180).
+ *
+ * @returns {LngLat} wrapped LngLat object
+ * @example
+ * var ll = new mapboxgl.LngLat(286.0251, 40.7736);
+ * var wrapped = ll.wrap();
+ * wrapped.lng; // = -73.9749
+ */</span>
+LngLat.prototype.wrap = <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> LngLat(wrap(<span class="keyword">this</span>.lng, -<span class="number">180</span>, <span class="number">180</span>), <span class="keyword">this</span>.lat);
+};
+
+<span class="comment">/**
+ * Return a `LngLat` as an array
+ *
+ * @returns {array} [lng, lat]
+ * @example
+ * var ll = new mapboxgl.LngLat(-73.9749, 40.7736);
+ * ll.toArray(); // = [-73.9749, 40.7736]
+ */</span>
+LngLat.prototype.toArray = <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+    <span class="keyword">return</span> [<span class="keyword">this</span>.lng, <span class="keyword">this</span>.lat];
+};
+
+<span class="comment">/**
+ * Return a `LngLat` as a string
+ *
+ * @returns {string} "LngLat(lng, lat)"
+ * @example
+ * var ll = new mapboxgl.LngLat(-73.9749, 40.7736);
+ * ll.toString(); // = "LngLat(-73.9749, 40.7736)"
+ */</span>
+LngLat.prototype.toString = <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+    <span class="keyword">return</span> <span class="string">'LngLat('</span> + <span class="keyword">this</span>.lng + <span class="string">', '</span> + <span class="keyword">this</span>.lat + <span class="string">')'</span>;
+};
+
+<span class="comment">/**
+ * Convert an array to a `LngLat` object, or return an existing `LngLat` object
+ * unchanged.
+ *
+ * @param {Array&lt;number>|LngLat} input `input` to convert
+ * @returns {LngLat} LngLat object or original input
+ * @example
+ * var arr = [-73.9749, 40.7736];
+ * var ll = mapboxgl.LngLat.convert(arr);
+ * ll;   // = LngLat {lng: -73.9749, lat: 40.7736}
+ */</span>
+LngLat.convert = <span class="function"><span class="keyword">function</span> <span class="params">(input)</span> {</span>
+    <span class="keyword">if</span> (input <span class="keyword">instanceof</span> LngLat) {
+        <span class="keyword">return</span> input;
+    }
+    <span class="keyword">if</span> (Array.isArray(input)) {
+        <span class="keyword">return</span> <span class="keyword">new</span> LngLat(input[<span class="number">0</span>], input[<span class="number">1</span>]);
+    }
+    <span class="keyword">return</span> input;
+};
+</code></pre>

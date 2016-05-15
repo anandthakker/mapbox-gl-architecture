@@ -1,0 +1,86 @@
+<h1>vectortile_to_geojson.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> VectorTileFeature = require(<span class="string">'vector-tile'</span>).VectorTileFeature;
+
+module.exports = Feature;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Feature</span><span class="params">(vectorTileFeature, z, x, y)</span> {</span>
+    <span class="keyword">this</span>._vectorTileFeature = vectorTileFeature;
+    vectorTileFeature._z = z;
+    vectorTileFeature._x = x;
+    vectorTileFeature._y = y;
+
+    <span class="keyword">this</span>.properties = vectorTileFeature.properties;
+
+    <span class="keyword">if</span> (vectorTileFeature._id) {
+        <span class="keyword">this</span>.id = vectorTileFeature._id;
+    }
+}
+
+Feature.prototype = {
+    type: <span class="string">"Feature"</span>,
+
+    get geometry() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._geometry === <span class="literal">undefined</span>) {
+            <span class="keyword">var</span> feature = <span class="keyword">this</span>._vectorTileFeature;
+            <span class="keyword">var</span> coords = projectCoords(
+                feature.loadGeometry(),
+                feature.extent,
+                feature._z, feature._x, feature._y);
+
+            <span class="keyword">var</span> type = VectorTileFeature.types[feature.type];
+
+            <span class="keyword">if</span> (type === <span class="string">'Point'</span> &amp;&amp; coords.length === <span class="number">1</span>) {
+                coords = coords[<span class="number">0</span>][<span class="number">0</span>];
+            } <span class="keyword">else</span> <span class="keyword">if</span> (type === <span class="string">'Point'</span>) {
+                coords = coords[<span class="number">0</span>];
+                type = <span class="string">'MultiPoint'</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (type === <span class="string">'LineString'</span> &amp;&amp; coords.length === <span class="number">1</span>) {
+                coords = coords[<span class="number">0</span>];
+            } <span class="keyword">else</span> <span class="keyword">if</span> (type === <span class="string">'LineString'</span>) {
+                type = <span class="string">'MultiLineString'</span>;
+            }
+
+            <span class="keyword">this</span>._geometry = {
+                type: type,
+                coordinates: coords
+            };
+
+            <span class="keyword">this</span>._vectorTileFeature = <span class="literal">null</span>;
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>._geometry;
+    },
+
+    set geometry(g) {
+        <span class="keyword">this</span>._geometry = g;
+    },
+
+    toJSON: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> json = {};
+        <span class="keyword">for</span> (<span class="keyword">var</span> i <span class="keyword">in</span> <span class="keyword">this</span>) {
+            <span class="keyword">if</span> (i === <span class="string">'_geometry'</span> || i === <span class="string">'_vectorTileFeature'</span>) <span class="keyword">continue</span>;
+            json[i] = <span class="keyword">this</span>[i];
+        }
+        <span class="keyword">return</span> json;
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">projectCoords</span><span class="params">(coords, extent, z, x, y)</span> {</span>
+    <span class="keyword">var</span> size = extent * Math.pow(<span class="number">2</span>, z),
+        x0 = extent * x,
+        y0 = extent * y;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        <span class="keyword">var</span> line = coords[i];
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; line.length; j++) {
+            <span class="keyword">var</span> p = line[j];
+            <span class="keyword">var</span> y2 = <span class="number">180</span> - (p.y + y0) * <span class="number">360</span> / size;
+            line[j] = [
+                (p.x + x0) * <span class="number">360</span> / size - <span class="number">180</span>,
+                <span class="number">360</span> / Math.PI * Math.atan(Math.exp(y2 * Math.PI / <span class="number">180</span>)) - <span class="number">90</span>
+            ];
+        }
+    }
+    <span class="keyword">return</span> coords;
+}
+</code></pre>

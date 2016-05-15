@@ -1,0 +1,181 @@
+<h1>shaping.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = {
+    shapeText: shapeText,
+    shapeIcon: shapeIcon
+};
+
+
+<span class="comment">// The position of a glyph relative to the text's anchor point.</span>
+<span class="function"><span class="keyword">function</span> <span class="title">PositionedGlyph</span><span class="params">(codePoint, x, y, glyph)</span> {</span>
+    <span class="keyword">this</span>.codePoint = codePoint;
+    <span class="keyword">this</span>.x = x;
+    <span class="keyword">this</span>.y = y;
+    <span class="keyword">this</span>.glyph = glyph;
+}
+
+<span class="comment">// A collection of positioned glyphs and some metadata</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Shaping</span><span class="params">(positionedGlyphs, text, top, bottom, left, right)</span> {</span>
+    <span class="keyword">this</span>.positionedGlyphs = positionedGlyphs;
+    <span class="keyword">this</span>.text = text;
+    <span class="keyword">this</span>.top = top;
+    <span class="keyword">this</span>.bottom = bottom;
+    <span class="keyword">this</span>.left = left;
+    <span class="keyword">this</span>.right = right;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">shapeText</span><span class="params">(text, glyphs, maxWidth, lineHeight, horizontalAlign, verticalAlign, justify, spacing, translate)</span> {</span>
+
+    <span class="keyword">var</span> positionedGlyphs = [];
+    <span class="keyword">var</span> shaping = <span class="keyword">new</span> Shaping(positionedGlyphs, text, translate[<span class="number">1</span>], translate[<span class="number">1</span>], translate[<span class="number">0</span>], translate[<span class="number">0</span>]);
+
+    <span class="comment">// the y offset *should* be part of the font metadata</span>
+    <span class="keyword">var</span> yOffset = -<span class="number">17</span>;
+
+    <span class="keyword">var</span> x = <span class="number">0</span>;
+    <span class="keyword">var</span> y = yOffset;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; text.length; i++) {
+        <span class="keyword">var</span> codePoint = text.charCodeAt(i);
+        <span class="keyword">var</span> glyph = glyphs[codePoint];
+
+        <span class="keyword">if</span> (!glyph) <span class="keyword">continue</span>;
+
+        positionedGlyphs.push(<span class="keyword">new</span> PositionedGlyph(codePoint, x, y, glyph));
+        x += glyph.advance + spacing;
+    }
+
+    <span class="keyword">if</span> (!positionedGlyphs.length) <span class="keyword">return</span> <span class="literal">false</span>;
+
+    linewrap(shaping, glyphs, lineHeight, maxWidth, horizontalAlign, verticalAlign, justify, translate);
+
+    <span class="keyword">return</span> shaping;
+}
+
+<span class="keyword">var</span> invisible = {
+    <span class="number">0x20</span>:   <span class="literal">true</span>, <span class="comment">// space</span>
+    <span class="number">0x200b</span>: <span class="literal">true</span>  <span class="comment">// zero-width space</span>
+};
+
+<span class="keyword">var</span> breakable = {
+    <span class="number">0x20</span>:   <span class="literal">true</span>, <span class="comment">// space</span>
+    <span class="number">0x26</span>:   <span class="literal">true</span>, <span class="comment">// ampersand</span>
+    <span class="number">0x2b</span>:   <span class="literal">true</span>, <span class="comment">// plus sign</span>
+    <span class="number">0x2d</span>:   <span class="literal">true</span>, <span class="comment">// hyphen-minus</span>
+    <span class="number">0x2f</span>:   <span class="literal">true</span>, <span class="comment">// solidus</span>
+    <span class="number">0xad</span>:   <span class="literal">true</span>, <span class="comment">// soft hyphen</span>
+    <span class="number">0xb7</span>:   <span class="literal">true</span>, <span class="comment">// middle dot</span>
+    <span class="number">0x200b</span>: <span class="literal">true</span>, <span class="comment">// zero-width space</span>
+    <span class="number">0x2010</span>: <span class="literal">true</span>, <span class="comment">// hyphen</span>
+    <span class="number">0x2013</span>: <span class="literal">true</span>  <span class="comment">// en dash</span>
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">linewrap</span><span class="params">(shaping, glyphs, lineHeight, maxWidth, horizontalAlign, verticalAlign, justify, translate)</span> {</span>
+    <span class="keyword">var</span> lastSafeBreak = <span class="literal">null</span>;
+
+    <span class="keyword">var</span> lengthBeforeCurrentLine = <span class="number">0</span>;
+    <span class="keyword">var</span> lineStartIndex = <span class="number">0</span>;
+    <span class="keyword">var</span> line = <span class="number">0</span>;
+
+    <span class="keyword">var</span> maxLineLength = <span class="number">0</span>;
+
+    <span class="keyword">var</span> positionedGlyphs = shaping.positionedGlyphs;
+
+    <span class="keyword">if</span> (maxWidth) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; positionedGlyphs.length; i++) {
+            <span class="keyword">var</span> positionedGlyph = positionedGlyphs[i];
+
+            positionedGlyph.x -= lengthBeforeCurrentLine;
+            positionedGlyph.y += lineHeight * line;
+
+            <span class="keyword">if</span> (positionedGlyph.x > maxWidth &amp;&amp; lastSafeBreak !== <span class="literal">null</span>) {
+
+                <span class="keyword">var</span> lineLength = positionedGlyphs[lastSafeBreak + <span class="number">1</span>].x;
+                maxLineLength = Math.max(lineLength, maxLineLength);
+
+                <span class="keyword">for</span> (<span class="keyword">var</span> k = lastSafeBreak + <span class="number">1</span>; k &lt;= i; k++) {
+                    positionedGlyphs[k].y += lineHeight;
+                    positionedGlyphs[k].x -= lineLength;
+                }
+
+                <span class="keyword">if</span> (justify) {
+                    <span class="comment">// Collapse invisible characters.</span>
+                    <span class="keyword">var</span> lineEnd = lastSafeBreak;
+                    <span class="keyword">if</span> (invisible[positionedGlyphs[lastSafeBreak].codePoint]) {
+                        lineEnd--;
+                    }
+
+                    justifyLine(positionedGlyphs, glyphs, lineStartIndex, lineEnd, justify);
+                }
+
+                lineStartIndex = lastSafeBreak + <span class="number">1</span>;
+                lastSafeBreak = <span class="literal">null</span>;
+                lengthBeforeCurrentLine += lineLength;
+                line++;
+            }
+
+            <span class="keyword">if</span> (breakable[positionedGlyph.codePoint]) {
+                lastSafeBreak = i;
+            }
+        }
+    }
+
+    <span class="keyword">var</span> lastPositionedGlyph = positionedGlyphs[positionedGlyphs.length - <span class="number">1</span>];
+    <span class="keyword">var</span> lastLineLength = lastPositionedGlyph.x + glyphs[lastPositionedGlyph.codePoint].advance;
+    maxLineLength = Math.max(maxLineLength, lastLineLength);
+
+    <span class="keyword">var</span> height = (line + <span class="number">1</span>) * lineHeight;
+
+    justifyLine(positionedGlyphs, glyphs, lineStartIndex, positionedGlyphs.length - <span class="number">1</span>, justify);
+    align(positionedGlyphs, justify, horizontalAlign, verticalAlign, maxLineLength, lineHeight, line, translate);
+
+    <span class="comment">// Calculate the bounding box</span>
+    shaping.top += -verticalAlign * height;
+    shaping.bottom = shaping.top + height;
+    shaping.left += -horizontalAlign * maxLineLength;
+    shaping.right = shaping.left + maxLineLength;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">justifyLine</span><span class="params">(positionedGlyphs, glyphs, start, end, justify)</span> {</span>
+    <span class="keyword">var</span> lastAdvance = glyphs[positionedGlyphs[end].codePoint].advance;
+    <span class="keyword">var</span> lineIndent = (positionedGlyphs[end].x + lastAdvance) * justify;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = start; j &lt;= end; j++) {
+        positionedGlyphs[j].x -= lineIndent;
+    }
+
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">align</span><span class="params">(positionedGlyphs, justify, horizontalAlign, verticalAlign, maxLineLength, lineHeight, line, translate)</span> {</span>
+    <span class="keyword">var</span> shiftX = (justify - horizontalAlign) * maxLineLength + translate[<span class="number">0</span>];
+    <span class="keyword">var</span> shiftY = (-verticalAlign * (line + <span class="number">1</span>) + <span class="number">0.5</span>) * lineHeight + translate[<span class="number">1</span>];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; positionedGlyphs.length; j++) {
+        positionedGlyphs[j].x += shiftX;
+        positionedGlyphs[j].y += shiftY;
+    }
+}
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">shapeIcon</span><span class="params">(image, layout)</span> {</span>
+    <span class="keyword">if</span> (!image || !image.rect) <span class="keyword">return</span> <span class="literal">null</span>;
+
+    <span class="keyword">var</span> dx = layout[<span class="string">'icon-offset'</span>][<span class="number">0</span>];
+    <span class="keyword">var</span> dy = layout[<span class="string">'icon-offset'</span>][<span class="number">1</span>];
+    <span class="keyword">var</span> x1 = dx - image.width / <span class="number">2</span>;
+    <span class="keyword">var</span> x2 = x1 + image.width;
+    <span class="keyword">var</span> y1 = dy - image.height / <span class="number">2</span>;
+    <span class="keyword">var</span> y2 = y1 + image.height;
+
+    <span class="keyword">return</span> <span class="keyword">new</span> PositionedIcon(image, y1, y2, x1, x2);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">PositionedIcon</span><span class="params">(image, top, bottom, left, right)</span> {</span>
+    <span class="keyword">this</span>.image = image;
+    <span class="keyword">this</span>.top = top;
+    <span class="keyword">this</span>.bottom = bottom;
+    <span class="keyword">this</span>.left = left;
+    <span class="keyword">this</span>.right = right;
+}
+</code></pre>

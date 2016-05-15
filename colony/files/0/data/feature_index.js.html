@@ -1,0 +1,301 @@
+<h1>feature_index.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> loadGeometry = require(<span class="string">'./load_geometry'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'./bucket'</span>).EXTENT;
+<span class="keyword">var</span> featureFilter = require(<span class="string">'feature-filter'</span>);
+<span class="keyword">var</span> StructArrayType = require(<span class="string">'../util/struct_array'</span>);
+<span class="keyword">var</span> Grid = require(<span class="string">'grid-index'</span>);
+<span class="keyword">var</span> DictionaryCoder = require(<span class="string">'../util/dictionary_coder'</span>);
+<span class="keyword">var</span> vt = require(<span class="string">'vector-tile'</span>);
+<span class="keyword">var</span> Protobuf = require(<span class="string">'pbf'</span>);
+<span class="keyword">var</span> GeoJSONFeature = require(<span class="string">'../util/vectortile_to_geojson'</span>);
+<span class="keyword">var</span> arraysIntersect = require(<span class="string">'../util/util'</span>).arraysIntersect;
+
+<span class="keyword">var</span> intersection = require(<span class="string">'../util/intersection_tests'</span>);
+<span class="keyword">var</span> multiPolygonIntersectsBufferedMultiPoint = intersection.multiPolygonIntersectsBufferedMultiPoint;
+<span class="keyword">var</span> multiPolygonIntersectsMultiPolygon = intersection.multiPolygonIntersectsMultiPolygon;
+<span class="keyword">var</span> multiPolygonIntersectsBufferedMultiLine = intersection.multiPolygonIntersectsBufferedMultiLine;
+
+
+<span class="keyword">var</span> FeatureIndexArray = <span class="keyword">new</span> StructArrayType({
+    members: [
+        <span class="comment">// the index of the feature in the original vectortile</span>
+        { type: <span class="string">'Uint32'</span>, name: <span class="string">'featureIndex'</span> },
+        <span class="comment">// the source layer the feature appears in</span>
+        { type: <span class="string">'Uint16'</span>, name: <span class="string">'sourceLayerIndex'</span> },
+        <span class="comment">// the bucket the feature appears in</span>
+        { type: <span class="string">'Uint16'</span>, name: <span class="string">'bucketIndex'</span> }
+    ]});
+
+module.exports = FeatureIndex;
+
+<span class="function"><span class="keyword">function</span> <span class="title">FeatureIndex</span><span class="params">(coord, overscaling, collisionTile)</span> {</span>
+    <span class="keyword">if</span> (coord.grid) {
+        <span class="keyword">var</span> serialized = coord;
+        <span class="keyword">var</span> rawTileData = overscaling;
+        coord = serialized.coord;
+        overscaling = serialized.overscaling;
+        <span class="keyword">this</span>.grid = <span class="keyword">new</span> Grid(serialized.grid);
+        <span class="keyword">this</span>.featureIndexArray = <span class="keyword">new</span> FeatureIndexArray(serialized.featureIndexArray);
+        <span class="keyword">this</span>.rawTileData = rawTileData;
+        <span class="keyword">this</span>.bucketLayerIDs = serialized.bucketLayerIDs;
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.grid = <span class="keyword">new</span> Grid(EXTENT, <span class="number">16</span>, <span class="number">0</span>);
+        <span class="keyword">this</span>.featureIndexArray = <span class="keyword">new</span> FeatureIndexArray();
+    }
+    <span class="keyword">this</span>.coord = coord;
+    <span class="keyword">this</span>.overscaling = overscaling;
+    <span class="keyword">this</span>.x = coord.x;
+    <span class="keyword">this</span>.y = coord.y;
+    <span class="keyword">this</span>.z = coord.z - Math.log(overscaling) / Math.LN2;
+    <span class="keyword">this</span>.setCollisionTile(collisionTile);
+}
+
+FeatureIndex.prototype.insert = <span class="keyword">function</span>(feature, featureIndex, sourceLayerIndex, bucketIndex) {
+    <span class="keyword">var</span> key = <span class="keyword">this</span>.featureIndexArray.length;
+    <span class="keyword">this</span>.featureIndexArray.emplaceBack(featureIndex, sourceLayerIndex, bucketIndex);
+    <span class="keyword">var</span> geometry = loadGeometry(feature);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> r = <span class="number">0</span>; r &lt; geometry.length; r++) {
+        <span class="keyword">var</span> ring = geometry[r];
+
+        <span class="comment">// TODO: skip holes when we start using vector tile spec 2.0</span>
+
+        <span class="keyword">var</span> bbox = [<span class="literal">Infinity</span>, <span class="literal">Infinity</span>, -<span class="literal">Infinity</span>, -<span class="literal">Infinity</span>];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ring.length; i++) {
+            <span class="keyword">var</span> p = ring[i];
+            bbox[<span class="number">0</span>] = Math.min(bbox[<span class="number">0</span>], p.x);
+            bbox[<span class="number">1</span>] = Math.min(bbox[<span class="number">1</span>], p.y);
+            bbox[<span class="number">2</span>] = Math.max(bbox[<span class="number">2</span>], p.x);
+            bbox[<span class="number">3</span>] = Math.max(bbox[<span class="number">3</span>], p.y);
+        }
+
+        <span class="keyword">this</span>.grid.insert(key, bbox[<span class="number">0</span>], bbox[<span class="number">1</span>], bbox[<span class="number">2</span>], bbox[<span class="number">3</span>]);
+    }
+};
+
+FeatureIndex.prototype.setCollisionTile = <span class="keyword">function</span>(collisionTile) {
+    <span class="keyword">this</span>.collisionTile = collisionTile;
+};
+
+FeatureIndex.prototype.serialize = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> data = {
+        coord: <span class="keyword">this</span>.coord,
+        overscaling: <span class="keyword">this</span>.overscaling,
+        grid: <span class="keyword">this</span>.grid.toArrayBuffer(),
+        featureIndexArray: <span class="keyword">this</span>.featureIndexArray.serialize(),
+        bucketLayerIDs: <span class="keyword">this</span>.bucketLayerIDs
+    };
+    <span class="keyword">return</span> {
+        data: data,
+        transferables: [data.grid, data.featureIndexArray.arrayBuffer]
+    };
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">translateDistance</span><span class="params">(translate)</span> {</span>
+    <span class="keyword">return</span> Math.sqrt(translate[<span class="number">0</span>] * translate[<span class="number">0</span>] + translate[<span class="number">1</span>] * translate[<span class="number">1</span>]);
+}
+
+<span class="comment">// Finds features in this tile at a particular position.</span>
+FeatureIndex.prototype.query = <span class="keyword">function</span>(args, styleLayers) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.vtLayers) {
+        <span class="keyword">this</span>.vtLayers = <span class="keyword">new</span> vt.VectorTile(<span class="keyword">new</span> Protobuf(<span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.rawTileData))).layers;
+        <span class="keyword">this</span>.sourceLayerCoder = <span class="keyword">new</span> DictionaryCoder(<span class="keyword">this</span>.vtLayers ? Object.keys(<span class="keyword">this</span>.vtLayers).sort() : [<span class="string">'_geojsonTileLayer'</span>]);
+    }
+
+    <span class="keyword">var</span> result = {};
+
+    <span class="keyword">var</span> params = args.params || {},
+        pixelsToTileUnits = EXTENT / args.tileSize / args.scale,
+        filter = featureFilter(params.filter);
+
+    <span class="comment">// Features are indexed their original geometries. The rendered geometries may</span>
+    <span class="comment">// be buffered, translated or offset. Figure out how much the search radius needs to be</span>
+    <span class="comment">// expanded by to include these features.</span>
+    <span class="keyword">var</span> additionalRadius = <span class="number">0</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> styleLayers) {
+        <span class="keyword">var</span> styleLayer = styleLayers[id];
+        <span class="keyword">var</span> paint = styleLayer.paint;
+
+        <span class="keyword">var</span> styleLayerDistance = <span class="number">0</span>;
+        <span class="keyword">if</span> (styleLayer.type === <span class="string">'line'</span>) {
+            styleLayerDistance = getLineWidth(paint) / <span class="number">2</span> + Math.abs(paint[<span class="string">'line-offset'</span>]) + translateDistance(paint[<span class="string">'line-translate'</span>]);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (styleLayer.type === <span class="string">'fill'</span>) {
+            styleLayerDistance = translateDistance(paint[<span class="string">'fill-translate'</span>]);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (styleLayer.type === <span class="string">'circle'</span>) {
+            styleLayerDistance = paint[<span class="string">'circle-radius'</span>] + translateDistance(paint[<span class="string">'circle-translate'</span>]);
+        }
+        additionalRadius = Math.max(additionalRadius, styleLayerDistance * pixelsToTileUnits);
+    }
+
+    <span class="keyword">var</span> queryGeometry = args.queryGeometry.map(<span class="keyword">function</span>(q) {
+        <span class="keyword">return</span> q.map(<span class="keyword">function</span>(p) {
+            <span class="keyword">return</span> <span class="keyword">new</span> Point(p.x, p.y);
+        });
+    });
+
+    <span class="keyword">var</span> minX = <span class="literal">Infinity</span>;
+    <span class="keyword">var</span> minY = <span class="literal">Infinity</span>;
+    <span class="keyword">var</span> maxX = -<span class="literal">Infinity</span>;
+    <span class="keyword">var</span> maxY = -<span class="literal">Infinity</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; queryGeometry.length; i++) {
+        <span class="keyword">var</span> ring = queryGeometry[i];
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; ring.length; k++) {
+            <span class="keyword">var</span> p = ring[k];
+            minX = Math.min(minX, p.x);
+            minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x);
+            maxY = Math.max(maxY, p.y);
+        }
+    }
+
+    <span class="keyword">var</span> matching = <span class="keyword">this</span>.grid.query(minX - additionalRadius, minY - additionalRadius, maxX + additionalRadius, maxY + additionalRadius);
+    matching.sort(topDownFeatureComparator);
+    <span class="keyword">this</span>.filterMatching(result, matching, <span class="keyword">this</span>.featureIndexArray, queryGeometry, filter, params.layers, styleLayers, args.bearing, pixelsToTileUnits);
+
+    <span class="keyword">var</span> matchingSymbols = <span class="keyword">this</span>.collisionTile.queryRenderedSymbols(minX, minY, maxX, maxY, args.scale);
+    matchingSymbols.sort();
+    <span class="keyword">this</span>.filterMatching(result, matchingSymbols, <span class="keyword">this</span>.collisionTile.collisionBoxArray, queryGeometry, filter, params.layers, styleLayers, args.bearing, pixelsToTileUnits);
+
+    <span class="keyword">return</span> result;
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">topDownFeatureComparator</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">return</span> b - a;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getLineWidth</span><span class="params">(paint)</span> {</span>
+    <span class="keyword">if</span> (paint[<span class="string">'line-gap-width'</span>] > <span class="number">0</span>) {
+        <span class="keyword">return</span> paint[<span class="string">'line-gap-width'</span>] + <span class="number">2</span> * paint[<span class="string">'line-width'</span>];
+    } <span class="keyword">else</span> {
+        <span class="keyword">return</span> paint[<span class="string">'line-width'</span>];
+    }
+}
+
+FeatureIndex.prototype.filterMatching = <span class="keyword">function</span>(result, matching, array, queryGeometry, filter, filterLayerIDs, styleLayers, bearing, pixelsToTileUnits) {
+    <span class="keyword">var</span> previousIndex;
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; matching.length; k++) {
+        <span class="keyword">var</span> index = matching[k];
+
+        <span class="comment">// don't check the same feature more than once</span>
+        <span class="keyword">if</span> (index === previousIndex) <span class="keyword">continue</span>;
+        previousIndex = index;
+
+        <span class="keyword">var</span> match = array.get(index);
+
+        <span class="keyword">var</span> layerIDs = <span class="keyword">this</span>.bucketLayerIDs[match.bucketIndex];
+        <span class="keyword">if</span> (filterLayerIDs &amp;&amp; !arraysIntersect(filterLayerIDs, layerIDs)) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> sourceLayerName = <span class="keyword">this</span>.sourceLayerCoder.decode(match.sourceLayerIndex);
+        <span class="keyword">var</span> sourceLayer = <span class="keyword">this</span>.vtLayers[sourceLayerName];
+        <span class="keyword">var</span> feature = sourceLayer.feature(match.featureIndex);
+
+        <span class="keyword">if</span> (!filter(feature)) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> geometry = <span class="literal">null</span>;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> l = <span class="number">0</span>; l &lt; layerIDs.length; l++) {
+            <span class="keyword">var</span> layerID = layerIDs[l];
+
+            <span class="keyword">if</span> (filterLayerIDs &amp;&amp; filterLayerIDs.indexOf(layerID) &lt; <span class="number">0</span>) {
+                <span class="keyword">continue</span>;
+            }
+
+            <span class="keyword">var</span> styleLayer = styleLayers[layerID];
+            <span class="keyword">if</span> (!styleLayer) <span class="keyword">continue</span>;
+
+            <span class="keyword">var</span> translatedPolygon;
+            <span class="keyword">if</span> (styleLayer.type !== <span class="string">'symbol'</span>) {
+                <span class="comment">// all symbols already match the style</span>
+
+                <span class="keyword">if</span> (!geometry) geometry = loadGeometry(feature);
+
+                <span class="keyword">var</span> paint = styleLayer.paint;
+
+                <span class="keyword">if</span> (styleLayer.type === <span class="string">'line'</span>) {
+                    translatedPolygon = translate(queryGeometry,
+                            paint[<span class="string">'line-translate'</span>], paint[<span class="string">'line-translate-anchor'</span>],
+                            bearing, pixelsToTileUnits);
+                    <span class="keyword">var</span> halfWidth = getLineWidth(paint) / <span class="number">2</span> * pixelsToTileUnits;
+                    <span class="keyword">if</span> (paint[<span class="string">'line-offset'</span>]) {
+                        geometry = offsetLine(geometry, paint[<span class="string">'line-offset'</span>] * pixelsToTileUnits);
+                    }
+                    <span class="keyword">if</span> (!multiPolygonIntersectsBufferedMultiLine(translatedPolygon, geometry, halfWidth)) <span class="keyword">continue</span>;
+
+                } <span class="keyword">else</span> <span class="keyword">if</span> (styleLayer.type === <span class="string">'fill'</span>) {
+                    translatedPolygon = translate(queryGeometry,
+                            paint[<span class="string">'fill-translate'</span>], paint[<span class="string">'fill-translate-anchor'</span>],
+                            bearing, pixelsToTileUnits);
+                    <span class="keyword">if</span> (!multiPolygonIntersectsMultiPolygon(translatedPolygon, geometry)) <span class="keyword">continue</span>;
+
+                } <span class="keyword">else</span> <span class="keyword">if</span> (styleLayer.type === <span class="string">'circle'</span>) {
+                    translatedPolygon = translate(queryGeometry,
+                            paint[<span class="string">'circle-translate'</span>], paint[<span class="string">'circle-translate-anchor'</span>],
+                            bearing, pixelsToTileUnits);
+                    <span class="keyword">var</span> circleRadius = paint[<span class="string">'circle-radius'</span>] * pixelsToTileUnits;
+                    <span class="keyword">if</span> (!multiPolygonIntersectsBufferedMultiPoint(translatedPolygon, geometry, circleRadius)) <span class="keyword">continue</span>;
+                }
+            }
+
+            <span class="keyword">var</span> geojsonFeature = <span class="keyword">new</span> GeoJSONFeature(feature, <span class="keyword">this</span>.z, <span class="keyword">this</span>.x, <span class="keyword">this</span>.y);
+            geojsonFeature.layer = styleLayer.serialize({
+                includeRefProperties: <span class="literal">true</span>
+            });
+            <span class="keyword">var</span> layerResult = result[layerID];
+            <span class="keyword">if</span> (layerResult === <span class="literal">undefined</span>) {
+                layerResult = result[layerID] = [];
+            }
+            layerResult.push(geojsonFeature);
+        }
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">translate</span><span class="params">(queryGeometry, translate, translateAnchor, bearing, pixelsToTileUnits)</span> {</span>
+    <span class="keyword">if</span> (!translate[<span class="number">0</span>] &amp;&amp; !translate[<span class="number">1</span>]) {
+        <span class="keyword">return</span> queryGeometry;
+    }
+
+    translate = Point.convert(translate);
+
+    <span class="keyword">if</span> (translateAnchor === <span class="string">"viewport"</span>) {
+        translate._rotate(-bearing);
+    }
+
+    <span class="keyword">var</span> translated = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; queryGeometry.length; i++) {
+        <span class="keyword">var</span> ring = queryGeometry[i];
+        <span class="keyword">var</span> translatedRing = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; ring.length; k++) {
+            translatedRing.push(ring[k].sub(translate._mult(pixelsToTileUnits)));
+        }
+        translated.push(translatedRing);
+    }
+    <span class="keyword">return</span> translated;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">offsetLine</span><span class="params">(rings, offset)</span> {</span>
+    <span class="keyword">var</span> newRings = [];
+    <span class="keyword">var</span> zero = <span class="keyword">new</span> Point(<span class="number">0</span>, <span class="number">0</span>);
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; rings.length; k++) {
+        <span class="keyword">var</span> ring = rings[k];
+        <span class="keyword">var</span> newRing = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ring.length; i++) {
+            <span class="keyword">var</span> a = ring[i - <span class="number">1</span>];
+            <span class="keyword">var</span> b = ring[i];
+            <span class="keyword">var</span> c = ring[i + <span class="number">1</span>];
+            <span class="keyword">var</span> aToB = i === <span class="number">0</span> ? zero : b.sub(a)._unit()._perp();
+            <span class="keyword">var</span> bToC = i === ring.length - <span class="number">1</span> ? zero : c.sub(b)._unit()._perp();
+            <span class="keyword">var</span> extrude = aToB._add(bToC)._unit();
+
+            <span class="keyword">var</span> cosHalfAngle = extrude.x * bToC.x + extrude.y * bToC.y;
+            extrude._mult(<span class="number">1</span> / cosHalfAngle);
+
+            newRing.push(extrude._mult(offset)._add(b));
+        }
+        newRings.push(newRing);
+    }
+    <span class="keyword">return</span> newRings;
+}
+</code></pre>

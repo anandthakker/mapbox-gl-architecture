@@ -1,0 +1,144 @@
+<h1>draw_raster.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> StructArrayType = require(<span class="string">'../util/struct_array'</span>);
+
+module.exports = drawRaster;
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawRaster</span><span class="params">(painter, source, layer, coords)</span> {</span>
+    <span class="keyword">if</span> (painter.isOpaquePass) <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> gl = painter.gl;
+
+    gl.enable(gl.DEPTH_TEST);
+    painter.depthMask(<span class="literal">true</span>);
+
+    <span class="comment">// Change depth function to prevent double drawing in areas where tiles overlap.</span>
+    gl.depthFunc(gl.LESS);
+
+    <span class="keyword">var</span> minTileZ = coords.length &amp;&amp; coords[<span class="number">0</span>].z;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        <span class="keyword">var</span> coord = coords[i];
+        <span class="comment">// set the lower zoom level to sublayer 0, and higher zoom levels to higher sublayers</span>
+        painter.setDepthSublayer(coord.z - minTileZ);
+        drawRasterTile(painter, source, layer, coord);
+    }
+
+    gl.depthFunc(gl.LEQUAL);
+}
+
+drawRaster.RasterBoundsArray = <span class="keyword">new</span> StructArrayType({
+    members: [
+        { name: <span class="string">'a_pos'</span>, type: <span class="string">'Int16'</span>, components: <span class="number">2</span> },
+        { name: <span class="string">'a_texture_pos'</span>, type: <span class="string">'Int16'</span>, components: <span class="number">2</span> }
+    ]
+});
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawRasterTile</span><span class="params">(painter, source, layer, coord)</span> {</span>
+
+    <span class="keyword">var</span> gl = painter.gl;
+
+    gl.disable(gl.STENCIL_TEST);
+
+    <span class="keyword">var</span> tile = source.getTile(coord);
+    <span class="keyword">var</span> posMatrix = painter.transform.calculatePosMatrix(coord, source.maxzoom);
+
+    <span class="keyword">var</span> program = painter.useProgram(<span class="string">'raster'</span>);
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, posMatrix);
+
+    <span class="comment">// color parameters</span>
+    gl.uniform1f(program.u_brightness_low, layer.paint[<span class="string">'raster-brightness-min'</span>]);
+    gl.uniform1f(program.u_brightness_high, layer.paint[<span class="string">'raster-brightness-max'</span>]);
+    gl.uniform1f(program.u_saturation_factor, saturationFactor(layer.paint[<span class="string">'raster-saturation'</span>]));
+    gl.uniform1f(program.u_contrast_factor, contrastFactor(layer.paint[<span class="string">'raster-contrast'</span>]));
+    gl.uniform3fv(program.u_spin_weights, spinWeights(layer.paint[<span class="string">'raster-hue-rotate'</span>]));
+
+    <span class="keyword">var</span> parentTile = tile.source &amp;&amp; tile.source._pyramid.findLoadedParent(coord, <span class="number">0</span>, {}),
+        opacities = getOpacities(tile, parentTile, layer, painter.transform);
+
+    <span class="keyword">var</span> parentScaleBy, parentTL;
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+
+    <span class="keyword">if</span> (parentTile) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, parentTile.texture);
+
+        parentScaleBy = Math.pow(<span class="number">2</span>, parentTile.coord.z - tile.coord.z);
+        parentTL = [tile.coord.x * parentScaleBy % <span class="number">1</span>, tile.coord.y * parentScaleBy % <span class="number">1</span>];
+    } <span class="keyword">else</span> {
+        opacities[<span class="number">1</span>] = <span class="number">0</span>;
+    }
+
+    <span class="comment">// cross-fade parameters</span>
+    gl.uniform2fv(program.u_tl_parent, parentTL || [<span class="number">0</span>, <span class="number">0</span>]);
+    gl.uniform1f(program.u_scale_parent, parentScaleBy || <span class="number">1</span>);
+    gl.uniform1f(program.u_buffer_scale, <span class="number">1</span>);
+    gl.uniform1f(program.u_opacity0, opacities[<span class="number">0</span>]);
+    gl.uniform1f(program.u_opacity1, opacities[<span class="number">1</span>]);
+    gl.uniform1i(program.u_image0, <span class="number">0</span>);
+    gl.uniform1i(program.u_image1, <span class="number">1</span>);
+
+    <span class="keyword">var</span> buffer = tile.boundsBuffer || painter.rasterBoundsBuffer;
+    <span class="keyword">var</span> vao = tile.boundsVAO || painter.rasterBoundsVAO;
+    vao.bind(gl, program, buffer);
+    gl.drawArrays(gl.TRIANGLE_STRIP, <span class="number">0</span>, buffer.length);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">spinWeights</span><span class="params">(angle)</span> {</span>
+    angle *= Math.PI / <span class="number">180</span>;
+    <span class="keyword">var</span> s = Math.sin(angle);
+    <span class="keyword">var</span> c = Math.cos(angle);
+    <span class="keyword">return</span> [
+        (<span class="number">2</span> * c + <span class="number">1</span>) / <span class="number">3</span>,
+        (-Math.sqrt(<span class="number">3</span>) * s - c + <span class="number">1</span>) / <span class="number">3</span>,
+        (Math.sqrt(<span class="number">3</span>) * s - c + <span class="number">1</span>) / <span class="number">3</span>
+    ];
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">contrastFactor</span><span class="params">(contrast)</span> {</span>
+    <span class="keyword">return</span> contrast > <span class="number">0</span> ?
+        <span class="number">1</span> / (<span class="number">1</span> - contrast) :
+        <span class="number">1</span> + contrast;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">saturationFactor</span><span class="params">(saturation)</span> {</span>
+    <span class="keyword">return</span> saturation > <span class="number">0</span> ?
+        <span class="number">1</span> - <span class="number">1</span> / (<span class="number">1.001</span> - saturation) :
+        -saturation;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getOpacities</span><span class="params">(tile, parentTile, layer, transform)</span> {</span>
+    <span class="keyword">var</span> opacity = [<span class="number">1</span>, <span class="number">0</span>];
+    <span class="keyword">var</span> fadeDuration = layer.paint[<span class="string">'raster-fade-duration'</span>];
+
+    <span class="keyword">if</span> (tile.source &amp;&amp; fadeDuration > <span class="number">0</span>) {
+        <span class="keyword">var</span> now = <span class="keyword">new</span> Date().getTime();
+
+        <span class="keyword">var</span> sinceTile = (now - tile.timeAdded) / fadeDuration;
+        <span class="keyword">var</span> sinceParent = parentTile ? (now - parentTile.timeAdded) / fadeDuration : -<span class="number">1</span>;
+
+        <span class="keyword">var</span> idealZ = tile.source._pyramid.coveringZoomLevel(transform);
+        <span class="keyword">var</span> parentFurther = parentTile ? Math.abs(parentTile.coord.z - idealZ) > Math.abs(tile.coord.z - idealZ) : <span class="literal">false</span>;
+
+        <span class="keyword">if</span> (!parentTile || parentFurther) {
+            <span class="comment">// if no parent or parent is older</span>
+            opacity[<span class="number">0</span>] = util.clamp(sinceTile, <span class="number">0</span>, <span class="number">1</span>);
+            opacity[<span class="number">1</span>] = <span class="number">1</span> - opacity[<span class="number">0</span>];
+        } <span class="keyword">else</span> {
+            <span class="comment">// parent is younger, zooming out</span>
+            opacity[<span class="number">0</span>] = util.clamp(<span class="number">1</span> - sinceParent, <span class="number">0</span>, <span class="number">1</span>);
+            opacity[<span class="number">1</span>] = <span class="number">1</span> - opacity[<span class="number">0</span>];
+        }
+    }
+
+    <span class="keyword">var</span> op = layer.paint[<span class="string">'raster-opacity'</span>];
+    opacity[<span class="number">0</span>] *= op;
+    opacity[<span class="number">1</span>] *= op;
+
+    <span class="keyword">return</span> opacity;
+}
+</code></pre>

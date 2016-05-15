@@ -1,0 +1,61 @@
+<h1>draw_debug.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> textVertices = require(<span class="string">'../lib/debugtext'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> mat4 = require(<span class="string">'gl-matrix'</span>).mat4;
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+<span class="keyword">var</span> Buffer = require(<span class="string">'../data/buffer'</span>);
+<span class="keyword">var</span> VertexArrayObject = require(<span class="string">'./vertex_array_object'</span>);
+
+module.exports = drawDebug;
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawDebug</span><span class="params">(painter, source, coords)</span> {</span>
+    <span class="keyword">if</span> (painter.isOpaquePass) <span class="keyword">return</span>;
+    <span class="keyword">if</span> (!painter.options.debug) <span class="keyword">return</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        drawDebugTile(painter, source, coords[i]);
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawDebugTile</span><span class="params">(painter, source, coord)</span> {</span>
+    <span class="keyword">var</span> gl = painter.gl;
+
+    gl.disable(gl.STENCIL_TEST);
+    painter.lineWidth(<span class="number">1</span> * browser.devicePixelRatio);
+
+    <span class="keyword">var</span> posMatrix = coord.posMatrix;
+    <span class="keyword">var</span> program = painter.useProgram(<span class="string">'debug'</span>);
+
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, posMatrix);
+    gl.uniform4f(program.u_color, <span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>);
+    painter.debugVAO.bind(gl, program, painter.debugBuffer);
+    gl.drawArrays(gl.LINE_STRIP, <span class="number">0</span>, painter.debugBuffer.length);
+
+    <span class="keyword">var</span> vertices = textVertices(coord.toString(), <span class="number">50</span>, <span class="number">200</span>, <span class="number">5</span>);
+    <span class="keyword">var</span> debugTextArray = <span class="keyword">new</span> painter.PosArray();
+    <span class="keyword">for</span> (<span class="keyword">var</span> v = <span class="number">0</span>; v &lt; vertices.length; v += <span class="number">2</span>) {
+        debugTextArray.emplaceBack(vertices[v], vertices[v + <span class="number">1</span>]);
+    }
+    <span class="keyword">var</span> debugTextBuffer = <span class="keyword">new</span> Buffer(debugTextArray.serialize(), painter.PosArray.serialize(), Buffer.BufferType.VERTEX);
+    <span class="keyword">var</span> debugTextVAO = <span class="keyword">new</span> VertexArrayObject();
+    debugTextVAO.bind(gl, program, debugTextBuffer);
+    gl.uniform4f(program.u_color, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>);
+
+    <span class="comment">// Draw the halo with multiple 1px lines instead of one wider line because</span>
+    <span class="comment">// the gl spec doesn't guarantee support for lines with width > 1.</span>
+    <span class="keyword">var</span> tileSize = source.getTile(coord).tileSize;
+    <span class="keyword">var</span> onePixel = EXTENT / (Math.pow(<span class="number">2</span>, painter.transform.zoom - coord.z) * tileSize);
+    <span class="keyword">var</span> translations = [[-<span class="number">1</span>, -<span class="number">1</span>], [-<span class="number">1</span>, <span class="number">1</span>], [<span class="number">1</span>, -<span class="number">1</span>], [<span class="number">1</span>, <span class="number">1</span>]];
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; translations.length; i++) {
+        <span class="keyword">var</span> translation = translations[i];
+        gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, mat4.translate([], posMatrix, [onePixel * translation[<span class="number">0</span>], onePixel * translation[<span class="number">1</span>], <span class="number">0</span>]));
+        gl.drawArrays(gl.LINES, <span class="number">0</span>, debugTextBuffer.length);
+    }
+
+    gl.uniform4f(program.u_color, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>);
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, posMatrix);
+    gl.drawArrays(gl.LINES, <span class="number">0</span>, debugTextBuffer.length);
+}
+</code></pre>

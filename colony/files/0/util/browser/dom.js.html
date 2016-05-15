@@ -1,0 +1,75 @@
+<h1>dom.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+exports.create = <span class="function"><span class="keyword">function</span> <span class="params">(tagName, className, container)</span> {</span>
+    <span class="keyword">var</span> el = document.createElement(tagName);
+    <span class="keyword">if</span> (className) el.className = className;
+    <span class="keyword">if</span> (container) container.appendChild(el);
+    <span class="keyword">return</span> el;
+};
+
+<span class="keyword">var</span> docStyle = document.documentElement.style;
+
+<span class="function"><span class="keyword">function</span> <span class="title">testProp</span><span class="params">(props)</span> {</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; props.length; i++) {
+        <span class="keyword">if</span> (props[i] <span class="keyword">in</span> docStyle) {
+            <span class="keyword">return</span> props[i];
+        }
+    }
+}
+
+<span class="keyword">var</span> selectProp = testProp([<span class="string">'userSelect'</span>, <span class="string">'MozUserSelect'</span>, <span class="string">'WebkitUserSelect'</span>, <span class="string">'msUserSelect'</span>]),
+    userSelect;
+exports.disableDrag = <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+    <span class="keyword">if</span> (selectProp) {
+        userSelect = docStyle[selectProp];
+        docStyle[selectProp] = <span class="string">'none'</span>;
+    }
+};
+exports.enableDrag = <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+    <span class="keyword">if</span> (selectProp) {
+        docStyle[selectProp] = userSelect;
+    }
+};
+
+<span class="keyword">var</span> transformProp = testProp([<span class="string">'transform'</span>, <span class="string">'WebkitTransform'</span>]);
+exports.setTransform = <span class="keyword">function</span>(el, value) {
+    el.style[transformProp] = value;
+};
+
+<span class="comment">// Suppress the next click, but only if it's immediate.</span>
+<span class="function"><span class="keyword">function</span> <span class="title">suppressClick</span><span class="params">(e)</span> {</span>
+    e.preventDefault();
+    e.stopPropagation();
+    window.removeEventListener(<span class="string">'click'</span>, suppressClick, <span class="literal">true</span>);
+}
+exports.suppressClick = <span class="keyword">function</span>() {
+    window.addEventListener(<span class="string">'click'</span>, suppressClick, <span class="literal">true</span>);
+    window.setTimeout(<span class="keyword">function</span>() {
+        window.removeEventListener(<span class="string">'click'</span>, suppressClick, <span class="literal">true</span>);
+    }, <span class="number">0</span>);
+};
+
+exports.mousePos = <span class="function"><span class="keyword">function</span> <span class="params">(el, e)</span> {</span>
+    <span class="keyword">var</span> rect = el.getBoundingClientRect();
+    e = e.touches ? e.touches[<span class="number">0</span>] : e;
+    <span class="keyword">return</span> <span class="keyword">new</span> Point(
+        e.clientX - rect.left - el.clientLeft,
+        e.clientY - rect.top - el.clientTop
+    );
+};
+
+exports.touchPos = <span class="function"><span class="keyword">function</span> <span class="params">(el, e)</span> {</span>
+    <span class="keyword">var</span> rect = el.getBoundingClientRect(),
+        points = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; e.touches.length; i++) {
+        points.push(<span class="keyword">new</span> Point(
+            e.touches[i].clientX - rect.left - el.clientLeft,
+            e.touches[i].clientY - rect.top - el.clientTop
+        ));
+    }
+    <span class="keyword">return</span> points;
+};
+</code></pre>

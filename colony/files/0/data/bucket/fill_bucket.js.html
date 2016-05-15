@@ -1,0 +1,76 @@
+<h1>fill_bucket.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Bucket = require(<span class="string">'../bucket'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> loadGeometry = require(<span class="string">'../load_geometry'</span>);
+
+module.exports = FillBucket;
+
+<span class="function"><span class="keyword">function</span> <span class="title">FillBucket</span><span class="params">()</span> {</span>
+    Bucket.apply(<span class="keyword">this</span>, arguments);
+}
+
+FillBucket.prototype = util.inherit(Bucket, {});
+
+FillBucket.prototype.programInterfaces = {
+    fill: {
+        vertexBuffer: <span class="literal">true</span>,
+        elementBuffer: <span class="literal">true</span>,
+        elementBuffer2: <span class="literal">true</span>,
+        elementBuffer2Components: <span class="number">2</span>,
+
+        layoutAttributes: [{
+            name: <span class="string">'a_pos'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Int16'</span>
+        }]
+    }
+};
+
+FillBucket.prototype.addFeature = <span class="keyword">function</span>(feature) {
+    <span class="keyword">var</span> lines = loadGeometry(feature);
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; lines.length; i++) {
+        <span class="keyword">this</span>.addFill(lines[i]);
+    }
+};
+
+FillBucket.prototype.addFill = <span class="keyword">function</span>(vertices) {
+    <span class="keyword">if</span> (vertices.length &lt; <span class="number">3</span>) {
+        <span class="comment">//console.warn('a fill must have at least three vertices');</span>
+        <span class="keyword">return</span>;
+    }
+
+    <span class="comment">// Calculate the total number of vertices we're going to produce so that we</span>
+    <span class="comment">// can resize the buffer beforehand, or detect whether the current line</span>
+    <span class="comment">// won't fit into the buffer anymore.</span>
+    <span class="comment">// In order to be able to use the vertex buffer for drawing the antialiased</span>
+    <span class="comment">// outlines, we separate all polygon vertices with a degenerate (out-of-</span>
+    <span class="comment">// viewplane) vertex.</span>
+
+    <span class="keyword">var</span> len = vertices.length;
+
+    <span class="comment">// Expand this geometry buffer to hold all the required vertices.</span>
+    <span class="keyword">var</span> group = <span class="keyword">this</span>.makeRoomFor(<span class="string">'fill'</span>, len + <span class="number">1</span>);
+
+    <span class="comment">// We're generating triangle fans, so we always start with the first coordinate in this polygon.</span>
+    <span class="keyword">var</span> firstIndex, prevIndex;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; vertices.length; i++) {
+        <span class="keyword">var</span> currentVertex = vertices[i];
+
+        <span class="keyword">var</span> currentIndex = group.layout.vertex.emplaceBack(currentVertex.x, currentVertex.y);
+        <span class="keyword">if</span> (i === <span class="number">0</span>) firstIndex = currentIndex;
+
+        <span class="comment">// Only add triangles that have distinct vertices.</span>
+        <span class="keyword">if</span> (i >= <span class="number">2</span> &amp;&amp; (currentVertex.x !== vertices[<span class="number">0</span>].x || currentVertex.y !== vertices[<span class="number">0</span>].y)) {
+            group.layout.element.emplaceBack(firstIndex, prevIndex, currentIndex);
+        }
+
+        <span class="keyword">if</span> (i >= <span class="number">1</span>) {
+            group.layout.element2.emplaceBack(prevIndex, currentIndex);
+        }
+
+        prevIndex = currentIndex;
+    }
+};
+</code></pre>

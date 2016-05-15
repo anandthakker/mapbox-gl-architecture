@@ -1,0 +1,40 @@
+<h1>symbol_style_layer.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> StyleLayer = require(<span class="string">'../style_layer'</span>);
+
+<span class="function"><span class="keyword">function</span> <span class="title">SymbolStyleLayer</span><span class="params">()</span> {</span>
+    StyleLayer.apply(<span class="keyword">this</span>, arguments);
+}
+
+module.exports = SymbolStyleLayer;
+
+SymbolStyleLayer.prototype = util.inherit(StyleLayer, {
+
+    isHidden: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (StyleLayer.prototype.isHidden.apply(<span class="keyword">this</span>, arguments)) <span class="keyword">return</span> <span class="literal">true</span>;
+
+        <span class="keyword">var</span> isTextHidden = <span class="keyword">this</span>.paint[<span class="string">'text-opacity'</span>] === <span class="number">0</span> || !<span class="keyword">this</span>.layout[<span class="string">'text-field'</span>];
+        <span class="keyword">var</span> isIconHidden = <span class="keyword">this</span>.paint[<span class="string">'icon-opacity'</span>] === <span class="number">0</span> || !<span class="keyword">this</span>.layout[<span class="string">'icon-image'</span>];
+        <span class="keyword">if</span> (isTextHidden &amp;&amp; isIconHidden) <span class="keyword">return</span> <span class="literal">true</span>;
+
+        <span class="keyword">return</span> <span class="literal">false</span>;
+    },
+
+    getLayoutValue: <span class="keyword">function</span>(name, globalProperties, featureProperties) {
+        <span class="keyword">if</span> (name === <span class="string">'text-rotation-alignment'</span> &amp;&amp;
+                <span class="keyword">this</span>.getLayoutValue(<span class="string">'symbol-placement'</span>, globalProperties, featureProperties) === <span class="string">'line'</span> &amp;&amp;
+                !<span class="keyword">this</span>.getLayoutProperty(<span class="string">'text-rotation-alignment'</span>)) {
+            <span class="keyword">return</span> <span class="string">'map'</span>;
+        } <span class="keyword">else</span> <span class="keyword">if</span> (name === <span class="string">'icon-rotation-alignment'</span> &amp;&amp;
+                <span class="keyword">this</span>.getLayoutValue(<span class="string">'symbol-placement'</span>, globalProperties, featureProperties) === <span class="string">'line'</span> &amp;&amp;
+                !<span class="keyword">this</span>.getLayoutProperty(<span class="string">'icon-rotation-alignment'</span>)) {
+            <span class="keyword">return</span> <span class="string">'map'</span>;
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> StyleLayer.prototype.getLayoutValue.apply(<span class="keyword">this</span>, arguments);
+        }
+    }
+
+});
+</code></pre>

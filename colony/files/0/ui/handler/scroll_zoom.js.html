@@ -1,0 +1,178 @@
+<h1>scroll_zoom.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>),
+    browser = require(<span class="string">'../../util/browser'</span>),
+    util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = ScrollZoomHandler;
+
+
+<span class="keyword">var</span> ua = <span class="keyword">typeof</span> navigator !== <span class="string">'undefined'</span> ? navigator.userAgent.toLowerCase() : <span class="string">''</span>,
+    firefox = ua.indexOf(<span class="string">'firefox'</span>) !== -<span class="number">1</span>,
+    safari = ua.indexOf(<span class="string">'safari'</span>) !== -<span class="number">1</span> &amp;&amp; ua.indexOf(<span class="string">'chrom'</span>) === -<span class="number">1</span>;
+
+
+<span class="comment">/**
+ * The `ScrollZoomHandler` allows a user to zoom the map by scrolling.
+ * @class ScrollZoomHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">ScrollZoomHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+ScrollZoomHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "scroll to zoom" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Enable the "scroll to zoom" interaction.
+     * @example
+     *   map.scrollZoom.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'wheel'</span>, <span class="keyword">this</span>._onWheel, <span class="literal">false</span>);
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'mousewheel'</span>, <span class="keyword">this</span>._onWheel, <span class="literal">false</span>);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "scroll to zoom" interaction.
+     * @example
+     *   map.scrollZoom.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'wheel'</span>, <span class="keyword">this</span>._onWheel);
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'mousewheel'</span>, <span class="keyword">this</span>._onWheel);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onWheel: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> value;
+
+        <span class="keyword">if</span> (e.type === <span class="string">'wheel'</span>) {
+            value = e.deltaY;
+            <span class="comment">// Firefox doubles the values on retina screens...</span>
+            <span class="keyword">if</span> (firefox &amp;&amp; e.deltaMode === window.WheelEvent.DOM_DELTA_PIXEL) value /= browser.devicePixelRatio;
+            <span class="keyword">if</span> (e.deltaMode === window.WheelEvent.DOM_DELTA_LINE) value *= <span class="number">40</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (e.type === <span class="string">'mousewheel'</span>) {
+            value = -e.wheelDeltaY;
+            <span class="keyword">if</span> (safari) value = value / <span class="number">3</span>;
+        }
+
+        <span class="keyword">var</span> now = browser.now(),
+            timeDelta = now - (<span class="keyword">this</span>._time || <span class="number">0</span>);
+
+        <span class="keyword">this</span>._pos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+        <span class="keyword">this</span>._time = now;
+
+        <span class="keyword">if</span> (value !== <span class="number">0</span> &amp;&amp; (value % <span class="number">4.000244140625</span>) === <span class="number">0</span>) {
+            <span class="comment">// This one is definitely a mouse wheel event.</span>
+            <span class="keyword">this</span>._type = <span class="string">'wheel'</span>;
+            <span class="comment">// Normalize this value to match trackpad.</span>
+            value = Math.floor(value / <span class="number">4</span>);
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (value !== <span class="number">0</span> &amp;&amp; Math.abs(value) &lt; <span class="number">4</span>) {
+            <span class="comment">// This one is definitely a trackpad event because it is so small.</span>
+            <span class="keyword">this</span>._type = <span class="string">'trackpad'</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (timeDelta > <span class="number">400</span>) {
+            <span class="comment">// This is likely a new scroll action.</span>
+            <span class="keyword">this</span>._type = <span class="literal">null</span>;
+            <span class="keyword">this</span>._lastValue = value;
+
+            <span class="comment">// Start a timeout in case this was a singular event, and dely it by up to 40ms.</span>
+            <span class="keyword">this</span>._timeout = setTimeout(<span class="keyword">this</span>._onTimeout, <span class="number">40</span>);
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (!<span class="keyword">this</span>._type) {
+            <span class="comment">// This is a repeating event, but we don't know the type of event just yet.</span>
+            <span class="comment">// If the delta per time is small, we assume it's a fast trackpad; otherwise we switch into wheel mode.</span>
+            <span class="keyword">this</span>._type = (Math.abs(timeDelta * value) &lt; <span class="number">200</span>) ? <span class="string">'trackpad'</span> : <span class="string">'wheel'</span>;
+
+            <span class="comment">// Make sure our delayed event isn't fired again, because we accumulate</span>
+            <span class="comment">// the previous event (which was less than 40ms ago) into this event.</span>
+            <span class="keyword">if</span> (<span class="keyword">this</span>._timeout) {
+                clearTimeout(<span class="keyword">this</span>._timeout);
+                <span class="keyword">this</span>._timeout = <span class="literal">null</span>;
+                value += <span class="keyword">this</span>._lastValue;
+            }
+        }
+
+        <span class="comment">// Slow down zoom if shift key is held for more precise zooming</span>
+        <span class="keyword">if</span> (e.shiftKey &amp;&amp; value) value = value / <span class="number">4</span>;
+
+        <span class="comment">// Only fire the callback if we actually know what type of scrolling device the user uses.</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._type) <span class="keyword">this</span>._zoom(-value, e);
+
+        e.preventDefault();
+    },
+
+    _onTimeout: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">this</span>._type = <span class="string">'wheel'</span>;
+        <span class="keyword">this</span>._zoom(-<span class="keyword">this</span>._lastValue);
+    },
+
+    _zoom: <span class="function"><span class="keyword">function</span> <span class="params">(delta, e)</span> {</span>
+        <span class="keyword">if</span> (delta === <span class="number">0</span>) <span class="keyword">return</span>;
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map;
+
+        <span class="comment">// Scale by sigmoid of scroll wheel delta.</span>
+        <span class="keyword">var</span> scale = <span class="number">2</span> / (<span class="number">1</span> + Math.exp(-Math.abs(delta / <span class="number">100</span>)));
+        <span class="keyword">if</span> (delta &lt; <span class="number">0</span> &amp;&amp; scale !== <span class="number">0</span>) scale = <span class="number">1</span> / scale;
+
+        <span class="keyword">var</span> fromScale = map.ease ? map.ease.to : map.transform.scale,
+            targetZoom = map.transform.scaleZoom(fromScale * scale);
+
+        map.zoomTo(targetZoom, {
+            duration: <span class="number">0</span>,
+            around: map.unproject(<span class="keyword">this</span>._pos),
+            delayEndEvents: <span class="number">200</span>
+        }, { originalEvent: e });
+    }
+};
+
+
+<span class="comment">/**
+ * Zoom start event. This event is emitted just before the map begins a transition from one
+ * zoom level to another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event zoomstart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+
+<span class="comment">/**
+ * Zoom event. This event is emitted repeatedly during animated transitions from one zoom level to
+ * another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event zoom
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+
+<span class="comment">/**
+ * Zoom end event. This event is emitted just after the map completes a transition from one
+ * zoom level to another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event zoomend
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+</code></pre>

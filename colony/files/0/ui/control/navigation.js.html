@@ -1,0 +1,118 @@
+<h1>navigation.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Control = require(<span class="string">'./control'</span>);
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = Navigation;
+
+<span class="comment">/**
+ * Creates a navigation control with zoom buttons and a compass
+ * @class Navigation
+ * @param {Object} [options]
+ * @param {string} [options.position='top-right'] A string indicating the control's position on the map. Options are `top-right`, `top-left`, `bottom-right`, `bottom-left`
+ * @example
+ * map.addControl(new mapboxgl.Navigation({position: 'top-left'})); // position is optional
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Navigation</span><span class="params">(options)</span> {</span>
+    util.setOptions(<span class="keyword">this</span>, options);
+}
+
+Navigation.prototype = util.inherit(Control, {
+    options: {
+        position: <span class="string">'top-right'</span>
+    },
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">var</span> className = <span class="string">'mapboxgl-ctrl'</span>;
+
+        <span class="keyword">var</span> container = <span class="keyword">this</span>._container = DOM.create(<span class="string">'div'</span>, className + <span class="string">'-group'</span>, map.getContainer());
+        <span class="keyword">this</span>._container.addEventListener(<span class="string">'contextmenu'</span>, <span class="keyword">this</span>._onContextMenu.bind(<span class="keyword">this</span>));
+
+        <span class="keyword">this</span>._zoomInButton = <span class="keyword">this</span>._createButton(className + <span class="string">'-icon '</span> + className + <span class="string">'-zoom-in'</span>, map.zoomIn.bind(map));
+        <span class="keyword">this</span>._zoomOutButton = <span class="keyword">this</span>._createButton(className + <span class="string">'-icon '</span> + className + <span class="string">'-zoom-out'</span>, map.zoomOut.bind(map));
+        <span class="keyword">this</span>._compass = <span class="keyword">this</span>._createButton(className + <span class="string">'-icon '</span> + className + <span class="string">'-compass'</span>, map.resetNorth.bind(map));
+
+        <span class="keyword">this</span>._compassArrow = DOM.create(<span class="string">'div'</span>, <span class="string">'arrow'</span>, <span class="keyword">this</span>._compass);
+
+        <span class="keyword">this</span>._compass.addEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onCompassDown.bind(<span class="keyword">this</span>));
+        <span class="keyword">this</span>._onCompassMove = <span class="keyword">this</span>._onCompassMove.bind(<span class="keyword">this</span>);
+        <span class="keyword">this</span>._onCompassUp = <span class="keyword">this</span>._onCompassUp.bind(<span class="keyword">this</span>);
+
+        map.on(<span class="string">'rotate'</span>, <span class="keyword">this</span>._rotateCompassArrow.bind(<span class="keyword">this</span>));
+        <span class="keyword">this</span>._rotateCompassArrow();
+
+        <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+        <span class="keyword">return</span> container;
+    },
+
+    _onContextMenu: <span class="keyword">function</span>(e) {
+        e.preventDefault();
+    },
+
+    _onCompassDown: <span class="keyword">function</span>(e) {
+        <span class="keyword">if</span> (e.button !== <span class="number">0</span>) <span class="keyword">return</span>;
+
+        DOM.disableDrag();
+        document.addEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onCompassMove);
+        document.addEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onCompassUp);
+
+        <span class="keyword">this</span>._el.dispatchEvent(copyMouseEvent(e));
+        e.stopPropagation();
+    },
+
+    _onCompassMove: <span class="keyword">function</span>(e) {
+        <span class="keyword">if</span> (e.button !== <span class="number">0</span>) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._el.dispatchEvent(copyMouseEvent(e));
+        e.stopPropagation();
+    },
+
+    _onCompassUp: <span class="keyword">function</span>(e) {
+        <span class="keyword">if</span> (e.button !== <span class="number">0</span>) <span class="keyword">return</span>;
+
+        document.removeEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onCompassMove);
+        document.removeEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onCompassUp);
+        DOM.enableDrag();
+
+        <span class="keyword">this</span>._el.dispatchEvent(copyMouseEvent(e));
+        e.stopPropagation();
+    },
+
+    _createButton: <span class="keyword">function</span>(className, fn) {
+        <span class="keyword">var</span> a = DOM.create(<span class="string">'button'</span>, className, <span class="keyword">this</span>._container);
+        a.addEventListener(<span class="string">'click'</span>, <span class="keyword">function</span>() { fn(); });
+        <span class="keyword">return</span> a;
+    },
+
+    _rotateCompassArrow: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> rotate = <span class="string">'rotate('</span> + (<span class="keyword">this</span>._map.transform.angle * (<span class="number">180</span> / Math.PI)) + <span class="string">'deg)'</span>;
+        <span class="keyword">this</span>._compassArrow.style.transform = rotate;
+    }
+});
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">copyMouseEvent</span><span class="params">(e)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> MouseEvent(e.type, {
+        button: <span class="number">2</span>,    <span class="comment">// right click</span>
+        buttons: <span class="number">2</span>,   <span class="comment">// right click</span>
+        bubbles: <span class="literal">true</span>,
+        cancelable: <span class="literal">true</span>,
+        detail: e.detail,
+        view: e.view,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        movementX: e.movementX,
+        movementY: e.movementY,
+        ctrlKey: e.ctrlKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey
+    });
+}
+
+</code></pre>

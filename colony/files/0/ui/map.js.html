@@ -1,0 +1,1081 @@
+<h1>map.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Canvas = require(<span class="string">'../util/canvas'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> DOM = require(<span class="string">'../util/dom'</span>);
+
+<span class="keyword">var</span> Style = require(<span class="string">'../style/style'</span>);
+<span class="keyword">var</span> AnimationLoop = require(<span class="string">'../style/animation_loop'</span>);
+<span class="keyword">var</span> Painter = require(<span class="string">'../render/painter'</span>);
+
+<span class="keyword">var</span> Transform = require(<span class="string">'../geo/transform'</span>);
+<span class="keyword">var</span> Hash = require(<span class="string">'./hash'</span>);
+
+<span class="keyword">var</span> Interaction = require(<span class="string">'./interaction'</span>);
+
+<span class="keyword">var</span> Camera = require(<span class="string">'./camera'</span>);
+<span class="keyword">var</span> LngLat = require(<span class="string">'../geo/lng_lat'</span>);
+<span class="keyword">var</span> LngLatBounds = require(<span class="string">'../geo/lng_lat_bounds'</span>);
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> Attribution = require(<span class="string">'./control/attribution'</span>);
+
+<span class="keyword">var</span> defaultMinZoom = <span class="number">0</span>;
+<span class="keyword">var</span> defaultMaxZoom = <span class="number">20</span>;
+
+<span class="comment">/**
+ * Creates a map instance. This is usually the beginning of your map:
+ * you tell Mapbox GL JS where to put the map by specifying a `container`
+ * option, and the map's style with `style` and other attributes of the map,
+ * and in return Mapbox GL JS initializes the map on your page and returns
+ * a map variable that lets you programmatically call methods on the map.
+ * @class Map
+ * @param {Object} options
+ * @param {string|Element} options.container HTML element to initialize the map in (or element id as string)
+ * @param {number} [options.minZoom=0] Minimum zoom of the map
+ * @param {number} [options.maxZoom=20] Maximum zoom of the map
+ * @param {Object|string} [options.style] Map style. This must be an an object conforming to the schema described in the [style reference](https://mapbox.com/mapbox-gl-style-spec/), or a URL to a JSON style. To load a style from the Mapbox API, you can use a URL of the form `mapbox://styles/:owner/:style`, where `:owner` is your Mapbox account name and `:style` is the style ID. Or you can use one of the predefined Mapbox styles:
+ *   * `mapbox://styles/mapbox/basic-v8` - Simple and flexible starting template.
+ *   * `mapbox://styles/mapbox/bright-v8` - Template for complex custom basemaps.
+ *   * `mapbox://styles/mapbox/streets-v8` - A ready-to-use basemap, perfect for minor customization or incorporating your own data.
+ *   * `mapbox://styles/mapbox/light-v8` - Subtle light backdrop for data vizualizations.
+ *   * `mapbox://styles/mapbox/dark-v8` - Subtle dark backdrop for data vizualizations.
+ * @param {boolean} [options.hash=false] If `true`, the map will track and update the page URL according to map position
+ * @param {boolean} [options.interactive=true] If `false`, no mouse, touch, or keyboard listeners are attached to the map, so it will not respond to input
+ * @param {number} [options.bearingSnap=7] Snap to north threshold in degrees.
+ * @param {Array} [options.classes] Style class names with which to initialize the map
+ * @param {boolean} [options.attributionControl=true] If `true`, an attribution control will be added to the map.
+ * @param {boolean} [options.failIfMajorPerformanceCaveat=false] If `true`, map creation will fail if the implementation determines that the performance of the created WebGL context would be dramatically lower than expected.
+ * @param {boolean} [options.preserveDrawingBuffer=false] If `true`, The maps canvas can be exported to a PNG using `map.getCanvas().toDataURL();`. This is false by default as a performance optimization.
+ * @param {LngLatBounds|Array&lt;Array&lt;number>>} [options.maxBounds] If set, the map is constrained to the given bounds.
+ * @param {boolean} [options.scrollZoom=true] If `true`, enable the "scroll to zoom" interaction (see `ScrollZoomHandler`)
+ * @param {boolean} [options.boxZoom=true] If `true`, enable the "box zoom" interaction (see `BoxZoomHandler`)
+ * @param {boolean} [options.dragRotate=true] If `true`, enable the "drag to rotate" interaction (see `DragRotateHandler`).
+ * @param {boolean} [options.dragPan=true] If `true`, enable the "drag to pan" interaction (see `DragPanHandler`).
+ * @param {boolean} [options.keyboard=true] If `true`, enable keyboard shortcuts (see `KeyboardHandler`).
+ * @param {boolean} [options.doubleClickZoom=true] If `true`, enable the "double click to zoom" interaction (see `DoubleClickZoomHandler`).
+ * @param {boolean} [options.touchZoomRotate=true] If `true`, enable the "pinch to rotate and zoom" interaction (see `TouchZoomRotateHandler`).
+ * @example
+ * var map = new mapboxgl.Map({
+ *   container: 'map',
+ *   center: [-122.420679, 37.772537],
+ *   zoom: 13,
+ *   style: style_object,
+ *   hash: true
+ * });
+ */</span>
+<span class="keyword">var</span> Map = module.exports = <span class="keyword">function</span>(options) {
+
+    options = util.inherit(<span class="keyword">this</span>.options, options);
+    <span class="keyword">this</span>._interactive = options.interactive;
+    <span class="keyword">this</span>._failIfMajorPerformanceCaveat = options.failIfMajorPerformanceCaveat;
+    <span class="keyword">this</span>._preserveDrawingBuffer = options.preserveDrawingBuffer;
+
+    <span class="keyword">if</span> (<span class="keyword">typeof</span> options.container === <span class="string">'string'</span>) {
+        <span class="keyword">this</span>._container = document.getElementById(options.container);
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>._container = options.container;
+    }
+
+    <span class="keyword">this</span>.animationLoop = <span class="keyword">new</span> AnimationLoop();
+    <span class="keyword">this</span>.transform = <span class="keyword">new</span> Transform(options.minZoom, options.maxZoom);
+
+    <span class="keyword">if</span> (options.maxBounds) {
+        <span class="keyword">this</span>.setMaxBounds(options.maxBounds);
+    }
+
+    util.bindAll([
+        <span class="string">'_forwardStyleEvent'</span>,
+        <span class="string">'_forwardSourceEvent'</span>,
+        <span class="string">'_forwardLayerEvent'</span>,
+        <span class="string">'_forwardTileEvent'</span>,
+        <span class="string">'_onStyleLoad'</span>,
+        <span class="string">'_onStyleChange'</span>,
+        <span class="string">'_onSourceAdd'</span>,
+        <span class="string">'_onSourceRemove'</span>,
+        <span class="string">'_onSourceUpdate'</span>,
+        <span class="string">'_onWindowResize'</span>,
+        <span class="string">'onError'</span>,
+        <span class="string">'_update'</span>,
+        <span class="string">'_render'</span>
+    ], <span class="keyword">this</span>);
+
+    <span class="keyword">this</span>._setupContainer();
+    <span class="keyword">this</span>._setupPainter();
+
+    <span class="keyword">this</span>.on(<span class="string">'move'</span>, <span class="keyword">this</span>._update.bind(<span class="keyword">this</span>, <span class="literal">false</span>));
+    <span class="keyword">this</span>.on(<span class="string">'zoom'</span>, <span class="keyword">this</span>._update.bind(<span class="keyword">this</span>, <span class="literal">true</span>));
+    <span class="keyword">this</span>.on(<span class="string">'moveend'</span>, <span class="keyword">function</span>() {
+        <span class="keyword">this</span>.animationLoop.set(<span class="number">300</span>); <span class="comment">// text fading</span>
+        <span class="keyword">this</span>._rerender();
+    }.bind(<span class="keyword">this</span>));
+
+    <span class="keyword">if</span> (<span class="keyword">typeof</span> window !== <span class="string">'undefined'</span>) {
+        window.addEventListener(<span class="string">'resize'</span>, <span class="keyword">this</span>._onWindowResize, <span class="literal">false</span>);
+    }
+
+    <span class="keyword">this</span>.interaction = <span class="keyword">new</span> Interaction(<span class="keyword">this</span>);
+
+    <span class="keyword">if</span> (options.interactive) {
+        <span class="keyword">this</span>.interaction.enable();
+    }
+
+    <span class="keyword">this</span>._hash = options.hash &amp;&amp; (<span class="keyword">new</span> Hash()).addTo(<span class="keyword">this</span>);
+    <span class="comment">// don't set position from options if set through hash</span>
+    <span class="keyword">if</span> (!<span class="keyword">this</span>._hash || !<span class="keyword">this</span>._hash._onHashChange()) {
+        <span class="keyword">this</span>.jumpTo(options);
+    }
+
+    <span class="keyword">this</span>.stacks = {};
+    <span class="keyword">this</span>._classes = [];
+
+    <span class="keyword">this</span>.resize();
+
+    <span class="keyword">if</span> (options.classes) <span class="keyword">this</span>.setClasses(options.classes);
+    <span class="keyword">if</span> (options.style) <span class="keyword">this</span>.setStyle(options.style);
+    <span class="keyword">if</span> (options.attributionControl) <span class="keyword">this</span>.addControl(<span class="keyword">new</span> Attribution(options.attributionControl));
+
+    <span class="keyword">this</span>.on(<span class="string">'style.error'</span>, <span class="keyword">this</span>.onError);
+    <span class="keyword">this</span>.on(<span class="string">'source.error'</span>, <span class="keyword">this</span>.onError);
+    <span class="keyword">this</span>.on(<span class="string">'tile.error'</span>, <span class="keyword">this</span>.onError);
+    <span class="keyword">this</span>.on(<span class="string">'layer.error'</span>, <span class="keyword">this</span>.onError);
+};
+
+util.extend(Map.prototype, Evented);
+util.extend(Map.prototype, Camera.prototype);
+util.extend(Map.prototype, <span class="comment">/** @lends Map.prototype */</span>{
+
+    options: {
+        center: [<span class="number">0</span>, <span class="number">0</span>],
+        zoom: <span class="number">0</span>,
+        bearing: <span class="number">0</span>,
+        pitch: <span class="number">0</span>,
+
+        minZoom: defaultMinZoom,
+        maxZoom: defaultMaxZoom,
+
+        interactive: <span class="literal">true</span>,
+
+        scrollZoom: <span class="literal">true</span>,
+        boxZoom: <span class="literal">true</span>,
+        dragRotate: <span class="literal">true</span>,
+        dragPan: <span class="literal">true</span>,
+        keyboard: <span class="literal">true</span>,
+        doubleClickZoom: <span class="literal">true</span>,
+        touchZoomRotate: <span class="literal">true</span>,
+
+        bearingSnap: <span class="number">7</span>,
+
+        hash: <span class="literal">false</span>,
+
+        attributionControl: <span class="literal">true</span>,
+
+        failIfMajorPerformanceCaveat: <span class="literal">false</span>,
+        preserveDrawingBuffer: <span class="literal">false</span>
+    },
+
+    <span class="comment">/**
+     * Adds a control to the map, calling `control.addTo(this)`.
+     *
+     * @param {Control} control
+     * @returns {Map} `this`
+     */</span>
+    addControl: <span class="keyword">function</span>(control) {
+        control.addTo(<span class="keyword">this</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Adds a style class to a map.
+     *
+     * @param {string} klass name of style class
+     * @param {StyleOptions} [options]
+     * @fires change
+     * @returns {Map} `this`
+     */</span>
+    addClass: <span class="keyword">function</span>(klass, options) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._classes.indexOf(klass) >= <span class="number">0</span> || klass === <span class="string">''</span>) <span class="keyword">return</span> <span class="keyword">this</span>;
+        <span class="keyword">this</span>._classes.push(klass);
+        <span class="keyword">this</span>._classOptions = options;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style) <span class="keyword">this</span>.style.updateClasses();
+        <span class="keyword">return</span> <span class="keyword">this</span>._update(<span class="literal">true</span>);
+    },
+
+    <span class="comment">/**
+     * Removes a style class from a map.
+     *
+     * @param {string} klass name of style class
+     * @param {StyleOptions} [options]
+     * @fires change
+     * @returns {Map} `this`
+     */</span>
+    removeClass: <span class="keyword">function</span>(klass, options) {
+        <span class="keyword">var</span> i = <span class="keyword">this</span>._classes.indexOf(klass);
+        <span class="keyword">if</span> (i &lt; <span class="number">0</span> || klass === <span class="string">''</span>) <span class="keyword">return</span> <span class="keyword">this</span>;
+        <span class="keyword">this</span>._classes.splice(i, <span class="number">1</span>);
+        <span class="keyword">this</span>._classOptions = options;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style) <span class="keyword">this</span>.style.updateClasses();
+        <span class="keyword">return</span> <span class="keyword">this</span>._update(<span class="literal">true</span>);
+    },
+
+    <span class="comment">/**
+     * Helper method to add more than one class.
+     *
+     * @param {Array&lt;string>} klasses An array of class names
+     * @param {StyleOptions} [options]
+     * @fires change
+     * @returns {Map} `this`
+     */</span>
+    setClasses: <span class="keyword">function</span>(klasses, options) {
+        <span class="keyword">var</span> uniqueClasses = {};
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; klasses.length; i++) {
+            <span class="keyword">if</span> (klasses[i] !== <span class="string">''</span>) uniqueClasses[klasses[i]] = <span class="literal">true</span>;
+        }
+        <span class="keyword">this</span>._classes = Object.keys(uniqueClasses);
+        <span class="keyword">this</span>._classOptions = options;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style) <span class="keyword">this</span>.style.updateClasses();
+        <span class="keyword">return</span> <span class="keyword">this</span>._update(<span class="literal">true</span>);
+    },
+
+    <span class="comment">/**
+     * Check whether a style class is active.
+     *
+     * @param {string} klass Name of style class
+     * @returns {boolean}
+     */</span>
+    hasClass: <span class="keyword">function</span>(klass) {
+        <span class="keyword">return</span> <span class="keyword">this</span>._classes.indexOf(klass) >= <span class="number">0</span>;
+    },
+
+    <span class="comment">/**
+     * Return an array of the current active style classes.
+     *
+     * @returns {boolean}
+     */</span>
+    getClasses: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._classes;
+    },
+
+    <span class="comment">/**
+     * Detect the map's new width and height and resize it. Given
+     * the `container` of the map specified in the Map constructor,
+     * this reads the new width from the DOM: so this method is often
+     * called after the map's container is resized by another script
+     * or the map is shown after being initially hidden with CSS.
+     *
+     * @returns {Map} `this`
+     */</span>
+    resize: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> width = <span class="number">0</span>, height = <span class="number">0</span>;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._container) {
+            width = <span class="keyword">this</span>._container.offsetWidth || <span class="number">400</span>;
+            height = <span class="keyword">this</span>._container.offsetHeight || <span class="number">300</span>;
+        }
+
+        <span class="keyword">this</span>._canvas.resize(width, height);
+        <span class="keyword">this</span>.transform.resize(width, height);
+        <span class="keyword">this</span>.painter.resize(width, height);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>
+            .fire(<span class="string">'movestart'</span>)
+            .fire(<span class="string">'move'</span>)
+            .fire(<span class="string">'resize'</span>)
+            .fire(<span class="string">'moveend'</span>);
+    },
+
+    <span class="comment">/**
+     * Get the map's geographical bounds.
+     *
+     * @returns {LngLatBounds}
+     */</span>
+    getBounds: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> bounds = <span class="keyword">new</span> LngLatBounds(
+            <span class="keyword">this</span>.transform.pointLocation(<span class="keyword">new</span> Point(<span class="number">0</span>, <span class="number">0</span>)),
+            <span class="keyword">this</span>.transform.pointLocation(<span class="keyword">this</span>.transform.size));
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.transform.angle || <span class="keyword">this</span>.transform.pitch) {
+            bounds.extend(<span class="keyword">this</span>.transform.pointLocation(<span class="keyword">new</span> Point(<span class="keyword">this</span>.transform.size.x, <span class="number">0</span>)));
+            bounds.extend(<span class="keyword">this</span>.transform.pointLocation(<span class="keyword">new</span> Point(<span class="number">0</span>, <span class="keyword">this</span>.transform.size.y)));
+        }
+
+        <span class="keyword">return</span> bounds;
+    },
+
+    <span class="comment">/**
+     * Set constraint on the map's geographical bounds. Pan or zoom operations that would result in
+     * displaying regions that fall outside of the bounds instead result in displaying the map at the
+     * closest point and/or zoom level of the requested operation that is within the max bounds.
+     *
+     * @param {LngLatBounds | Array&lt;Array&lt;number>> | null | undefined} lnglatbounds Desired max bounds of the map. If null or undefined, function removes any bounds constraints on the map.
+     * @returns {Map} `this`
+     */</span>
+    setMaxBounds: <span class="function"><span class="keyword">function</span> <span class="params">(lnglatbounds)</span> {</span>
+        <span class="keyword">if</span> (lnglatbounds) {
+            <span class="keyword">var</span> b = LngLatBounds.convert(lnglatbounds);
+            <span class="keyword">this</span>.transform.lngRange = [b.getWest(), b.getEast()];
+            <span class="keyword">this</span>.transform.latRange = [b.getSouth(), b.getNorth()];
+            <span class="keyword">this</span>.transform._constrain();
+            <span class="keyword">this</span>._update();
+        } <span class="keyword">else</span> <span class="keyword">if</span> (lnglatbounds === <span class="literal">null</span> || lnglatbounds === <span class="literal">undefined</span>) {
+            <span class="keyword">this</span>.transform.lngRange = [];
+            <span class="keyword">this</span>.transform.latRange = [];
+            <span class="keyword">this</span>._update();
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+
+    },
+    <span class="comment">/**
+     * Set the map's minimum zoom level, and zooms map to that level if it is
+     * currently below it. If no parameter provided, unsets the current
+     * minimum zoom (sets it to 0)
+     *
+     * @param {number} minZoom Minimum zoom level. Must be between 0 and 20.
+     * @returns {Map} `this
+     */</span>
+    setMinZoom: <span class="keyword">function</span>(minZoom) {
+
+        minZoom = minZoom === <span class="literal">null</span> || minZoom === <span class="literal">undefined</span> ? defaultMinZoom : minZoom;
+
+        <span class="keyword">if</span> (minZoom >= defaultMinZoom &amp;&amp; minZoom &lt;= <span class="keyword">this</span>.transform.maxZoom) {
+            <span class="keyword">this</span>.transform.minZoom = minZoom;
+            <span class="keyword">this</span>._update();
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.getZoom() &lt; minZoom) <span class="keyword">this</span>.setZoom(minZoom);
+
+            <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'minZoom must be between '</span> + defaultMinZoom + <span class="string">' and the current maxZoom, inclusive'</span>);
+    },
+
+    <span class="comment">/**
+     * Set the map's maximum zoom level, and zooms map to that level if it is
+     * currently above it. If no parameter provided, unsets the current
+     * maximum zoom (sets it to 20)
+     * @param {number} maxZoom Maximum zoom level. Must be between 0 and 20.
+     * @returns {Map} `this`
+     */</span>
+    setMaxZoom: <span class="keyword">function</span>(maxZoom) {
+
+        maxZoom = maxZoom === <span class="literal">null</span> || maxZoom === <span class="literal">undefined</span> ? defaultMaxZoom : maxZoom;
+
+        <span class="keyword">if</span> (maxZoom >= <span class="keyword">this</span>.transform.minZoom &amp;&amp; maxZoom &lt;= defaultMaxZoom) {
+            <span class="keyword">this</span>.transform.maxZoom = maxZoom;
+            <span class="keyword">this</span>._update();
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.getZoom() > maxZoom) <span class="keyword">this</span>.setZoom(maxZoom);
+
+            <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'maxZoom must be between the current minZoom and '</span> + defaultMaxZoom + <span class="string">', inclusive'</span>);
+    },
+    <span class="comment">/**
+     * Get pixel coordinates relative to the map container, given a geographical
+     * location.
+     *
+     * @param {LngLat} lnglat
+     * @returns {Object} `x` and `y` coordinates
+     */</span>
+    project: <span class="keyword">function</span>(lnglat) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.transform.locationPoint(LngLat.convert(lnglat));
+    },
+
+    <span class="comment">/**
+     * Get geographical coordinates, given pixel coordinates.
+     *
+     * @param {Array&lt;number>} point [x, y] pixel coordinates
+     * @returns {LngLat}
+     */</span>
+    unproject: <span class="keyword">function</span>(point) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.transform.pointLocation(Point.convert(point));
+    },
+
+    <span class="comment">/**
+     * Query rendered features within a point or rectangle.
+     *
+     * @param {Point|Array&lt;number>|Array&lt;Point>|Array&lt;Array&lt;number>>} [pointOrBox] Either [x, y] pixel coordinates of a point, or [[x1, y1], [x2, y2]] pixel coordinates of opposite corners of bounding rectangle. Optional: use entire viewport if omitted.
+     * @param {Object} params
+     * @param {Array&lt;string>} [params.layers] Only query features from layers with these layer IDs.
+     * @param {Array} [params.filter] A mapbox-gl-style-spec filter.
+     *
+     * @returns {Array&lt;Object>} features - An array of [GeoJSON](http://geojson.org/) features
+     * matching the query parameters. The GeoJSON properties of each feature are taken from
+     * the original source. Each feature object also contains a top-level `layer`
+     * property whose value is an object representing the style layer to which the
+     * feature belongs. Layout and paint properties in this object contain values
+     * which are fully evaluated for the given zoom level and feature.
+     *
+     * @example
+     * var features = map.queryRenderedFeatures([20, 35], { layers: ['my-layer-name'] });
+     *
+     * @example
+     * var features = map.queryRenderedFeatures([[10, 20], [30, 50]], { layers: ['my-layer-name'] });
+     */</span>
+    queryRenderedFeatures: <span class="keyword">function</span>(pointOrBox, params) {
+        <span class="keyword">if</span> (!(pointOrBox <span class="keyword">instanceof</span> Point || Array.isArray(pointOrBox))) {
+            params = pointOrBox;
+            pointOrBox = <span class="literal">undefined</span>;
+        }
+        <span class="keyword">var</span> queryGeometry = <span class="keyword">this</span>._makeQueryGeometry(pointOrBox);
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.queryRenderedFeatures(queryGeometry, params, <span class="keyword">this</span>.transform.zoom, <span class="keyword">this</span>.transform.angle);
+    },
+
+    _makeQueryGeometry: <span class="keyword">function</span>(pointOrBox) {
+        <span class="keyword">if</span> (pointOrBox === <span class="literal">undefined</span>) {
+            <span class="comment">// bounds was omitted: use full viewport</span>
+            pointOrBox = [
+                Point.convert([<span class="number">0</span>, <span class="number">0</span>]),
+                Point.convert([<span class="keyword">this</span>.transform.width, <span class="keyword">this</span>.transform.height])
+            ];
+        }
+
+        <span class="keyword">var</span> queryGeometry;
+        <span class="keyword">var</span> isPoint = pointOrBox <span class="keyword">instanceof</span> Point || <span class="keyword">typeof</span> pointOrBox[<span class="number">0</span>] === <span class="string">'number'</span>;
+
+        <span class="keyword">if</span> (isPoint) {
+            <span class="keyword">var</span> point = Point.convert(pointOrBox);
+            queryGeometry = [point];
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> box = [Point.convert(pointOrBox[<span class="number">0</span>]), Point.convert(pointOrBox[<span class="number">1</span>])];
+            queryGeometry = [
+                box[<span class="number">0</span>],
+                <span class="keyword">new</span> Point(box[<span class="number">1</span>].x, box[<span class="number">0</span>].y),
+                box[<span class="number">1</span>],
+                <span class="keyword">new</span> Point(box[<span class="number">0</span>].x, box[<span class="number">1</span>].y),
+                box[<span class="number">0</span>]
+            ];
+        }
+
+        queryGeometry = queryGeometry.map(<span class="keyword">function</span>(p) {
+            <span class="keyword">return</span> <span class="keyword">this</span>.transform.pointCoordinate(p);
+        }.bind(<span class="keyword">this</span>));
+
+        <span class="keyword">return</span> queryGeometry;
+    },
+
+    <span class="comment">/**
+     * Get data from vector tiles as an array of GeoJSON Features.
+     *
+     * @param {string} sourceID source ID
+     * @param {Object} params
+     * @param {string} [params.sourceLayer] The name of the vector tile layer to get features from.
+     * @param {Array} [params.filter] A mapbox-gl-style-spec filter.
+     *
+     * @returns {Array&lt;Object>} features - An array of [GeoJSON](http://geojson.org/) features matching the query parameters. The GeoJSON properties of each feature are taken from the original source. Each feature object also contains a top-level `layer` property whose value is an object representing the style layer to which the feature belongs. Layout and paint properties in this object contain values which are fully evaluated for the given zoom level and feature.
+     */</span>
+    querySourceFeatures: <span class="keyword">function</span>(sourceID, params) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.querySourceFeatures(sourceID, params);
+    },
+
+    <span class="comment">/**
+     * Replaces the map's style object with a new value. Unlike the `style`
+     * option in the Map constructor, this method only accepts an object
+     * of a new style, not a URL string.
+     *
+     * @param {Object} style A style object formatted as JSON
+     * @returns {Map} `this`
+     */</span>
+    setStyle: <span class="keyword">function</span>(style) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style) {
+            <span class="keyword">this</span>.style
+                .off(<span class="string">'load'</span>, <span class="keyword">this</span>._onStyleLoad)
+                .off(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardStyleEvent)
+                .off(<span class="string">'change'</span>, <span class="keyword">this</span>._onStyleChange)
+                .off(<span class="string">'source.add'</span>, <span class="keyword">this</span>._onSourceAdd)
+                .off(<span class="string">'source.remove'</span>, <span class="keyword">this</span>._onSourceRemove)
+                .off(<span class="string">'source.load'</span>, <span class="keyword">this</span>._onSourceUpdate)
+                .off(<span class="string">'source.error'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+                .off(<span class="string">'source.change'</span>, <span class="keyword">this</span>._onSourceUpdate)
+                .off(<span class="string">'layer.add'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+                .off(<span class="string">'layer.remove'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+                .off(<span class="string">'layer.error'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+                .off(<span class="string">'tile.add'</span>, <span class="keyword">this</span>._forwardTileEvent)
+                .off(<span class="string">'tile.remove'</span>, <span class="keyword">this</span>._forwardTileEvent)
+                .off(<span class="string">'tile.load'</span>, <span class="keyword">this</span>._update)
+                .off(<span class="string">'tile.error'</span>, <span class="keyword">this</span>._forwardTileEvent)
+                .off(<span class="string">'tile.stats'</span>, <span class="keyword">this</span>._forwardTileEvent)
+                ._remove();
+
+            <span class="keyword">this</span>.off(<span class="string">'rotate'</span>, <span class="keyword">this</span>.style._redoPlacement);
+            <span class="keyword">this</span>.off(<span class="string">'pitch'</span>, <span class="keyword">this</span>.style._redoPlacement);
+        }
+
+        <span class="keyword">if</span> (!style) {
+            <span class="keyword">this</span>.style = <span class="literal">null</span>;
+            <span class="keyword">return</span> <span class="keyword">this</span>;
+        } <span class="keyword">else</span> <span class="keyword">if</span> (style <span class="keyword">instanceof</span> Style) {
+            <span class="keyword">this</span>.style = style;
+        } <span class="keyword">else</span> {
+            <span class="keyword">this</span>.style = <span class="keyword">new</span> Style(style, <span class="keyword">this</span>.animationLoop);
+        }
+
+        <span class="keyword">this</span>.style
+            .on(<span class="string">'load'</span>, <span class="keyword">this</span>._onStyleLoad)
+            .on(<span class="string">'error'</span>, <span class="keyword">this</span>._forwardStyleEvent)
+            .on(<span class="string">'change'</span>, <span class="keyword">this</span>._onStyleChange)
+            .on(<span class="string">'source.add'</span>, <span class="keyword">this</span>._onSourceAdd)
+            .on(<span class="string">'source.remove'</span>, <span class="keyword">this</span>._onSourceRemove)
+            .on(<span class="string">'source.load'</span>, <span class="keyword">this</span>._onSourceUpdate)
+            .on(<span class="string">'source.error'</span>, <span class="keyword">this</span>._forwardSourceEvent)
+            .on(<span class="string">'source.change'</span>, <span class="keyword">this</span>._onSourceUpdate)
+            .on(<span class="string">'layer.add'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+            .on(<span class="string">'layer.remove'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+            .on(<span class="string">'layer.error'</span>, <span class="keyword">this</span>._forwardLayerEvent)
+            .on(<span class="string">'tile.add'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.remove'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.load'</span>, <span class="keyword">this</span>._update)
+            .on(<span class="string">'tile.error'</span>, <span class="keyword">this</span>._forwardTileEvent)
+            .on(<span class="string">'tile.stats'</span>, <span class="keyword">this</span>._forwardTileEvent);
+
+        <span class="keyword">this</span>.on(<span class="string">'rotate'</span>, <span class="keyword">this</span>.style._redoPlacement);
+        <span class="keyword">this</span>.on(<span class="string">'pitch'</span>, <span class="keyword">this</span>.style._redoPlacement);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get a style object that can be used to recreate the map's style.
+     *
+     * @returns {Object} style
+     */</span>
+    getStyle: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.serialize();
+    },
+
+    <span class="comment">/**
+     * Add a source to the map style.
+     *
+     * @param {string} id ID of the source. Must not be used by any existing source.
+     * @param {Object} source source specification, following the
+     * [Mapbox GL Style Reference](https://www.mapbox.com/mapbox-gl-style-spec/#sources)
+     * @fires source.add
+     * @returns {Map} `this`
+     */</span>
+    addSource: <span class="keyword">function</span>(id, source) {
+        <span class="keyword">this</span>.style.addSource(id, source);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Remove an existing source from the map style.
+     *
+     * @param {string} id ID of the source to remove
+     * @fires source.remove
+     * @returns {Map} `this`
+     */</span>
+    removeSource: <span class="keyword">function</span>(id) {
+        <span class="keyword">this</span>.style.removeSource(id);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Return the style source object with the given `id`.
+     *
+     * @param {string} id source ID
+     * @returns {Object}
+     */</span>
+    getSource: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.getSource(id);
+    },
+
+    <span class="comment">/**
+     * Add a layer to the map style. The layer will be inserted before the layer with
+     * ID `before`, or appended if `before` is omitted.
+     * @param {StyleLayer|Object} layer
+     * @param {string=} before  ID of an existing layer to insert before
+     * @fires layer.add
+     * @returns {Map} `this`
+     */</span>
+    addLayer: <span class="keyword">function</span>(layer, before) {
+        <span class="keyword">this</span>.style.addLayer(layer, before);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Remove the layer with the given `id` from the map. Any layers which refer to the
+     * specified layer via a `ref` property are also removed.
+     *
+     * @param {string} id layer id
+     * @throws {Error} if no layer with the given `id` exists
+     * @fires layer.remove
+     * @returns {Map} `this`
+     */</span>
+    removeLayer: <span class="keyword">function</span>(id) {
+        <span class="keyword">this</span>.style.removeLayer(id);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Return the style layer object with the given `id`.
+     *
+     * @param {string} id layer id
+     * @returns {?Object} a layer, if one with the given `id` exists
+     */</span>
+    getLayer: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.getLayer(id);
+    },
+
+    <span class="comment">/**
+     * Set the filter for a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @param {Array} filter filter specification, as defined in the [Style Specification](https://www.mapbox.com/mapbox-gl-style-spec/#types-filter)
+     * @returns {Map} `this`
+     * @example
+     * map.setFilter('my-layer', ['==', 'name', 'USA']);
+     */</span>
+    setFilter: <span class="keyword">function</span>(layer, filter) {
+        <span class="keyword">this</span>.style.setFilter(layer, filter);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Set the zoom extent for a given style layer.
+     *
+     * @param {string} layerId ID of a layer
+     * @param {number} minzoom minimum zoom extent
+     * @param {number} maxzoom maximum zoom extent
+     * @returns {Map} `this`
+     * @example
+     * map.setLayerZoomRange('my-layer', 2, 5);
+     */</span>
+    setLayerZoomRange: <span class="keyword">function</span>(layerId, minzoom, maxzoom) {
+        <span class="keyword">this</span>.style.setLayerZoomRange(layerId, minzoom, maxzoom);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the filter for a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @returns {Array} filter specification, as defined in the [Style Specification](https://www.mapbox.com/mapbox-gl-style-spec/#filter)
+     */</span>
+    getFilter: <span class="keyword">function</span>(layer) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.getFilter(layer);
+    },
+
+    <span class="comment">/**
+     * Set the value of a paint property in a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @param {string} name name of a paint property
+     * @param {*} value value for the paint propery; must have the type appropriate for the property as defined in the [Style Specification](https://www.mapbox.com/mapbox-gl-style-spec/)
+     * @param {string=} klass optional class specifier for the property
+     * @returns {Map} `this`
+     * @example
+     * map.setPaintProperty('my-layer', 'fill-color', '#faafee');
+     */</span>
+    setPaintProperty: <span class="keyword">function</span>(layer, name, value, klass) {
+        <span class="keyword">this</span>.style.setPaintProperty(layer, name, value, klass);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the value of a paint property in a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @param {string} name name of a paint property
+     * @param {string=} klass optional class specifier for the property
+     * @returns {*} value for the paint propery
+     */</span>
+    getPaintProperty: <span class="keyword">function</span>(layer, name, klass) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.getPaintProperty(layer, name, klass);
+    },
+
+    <span class="comment">/**
+     * Set the value of a layout property in a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @param {string} name name of a layout property
+     * @param {*} value value for the layout propery; must have the type appropriate for the property as defined in the [Style Specification](https://www.mapbox.com/mapbox-gl-style-spec/)
+     * @returns {Map} `this`
+     * @example
+     * map.setLayoutProperty('my-layer', 'visibility', 'none');
+     */</span>
+    setLayoutProperty: <span class="keyword">function</span>(layer, name, value) {
+        <span class="keyword">this</span>.style.setLayoutProperty(layer, name, value);
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the value of a layout property in a given style layer.
+     *
+     * @param {string} layer ID of a layer
+     * @param {string} name name of a layout property
+     * @param {string=} klass optional class specifier for the property
+     * @returns {*} value for the layout propery
+     */</span>
+    getLayoutProperty: <span class="keyword">function</span>(layer, name) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.style.getLayoutProperty(layer, name);
+    },
+
+    <span class="comment">/**
+     * Get the Map's container as an HTML element
+     * @returns {HTMLElement} container
+     */</span>
+    getContainer: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._container;
+    },
+
+    <span class="comment">/**
+     * Get the container for the map `canvas` element.
+     *
+     * If you want to add non-GL overlays to the map, you should append them to this element. This
+     * is the element to which event bindings for map interactivity such as panning and zooming are
+     * attached. It will receive bubbled events for child elements such as the `canvas`, but not for
+     * map controls.
+     *
+     * @returns {HTMLElement} container
+     */</span>
+    getCanvasContainer: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._canvasContainer;
+    },
+
+    <span class="comment">/**
+     * Get the Map's canvas as an HTML canvas
+     * @returns {HTMLElement} canvas
+     */</span>
+    getCanvas: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._canvas.getElement();
+    },
+
+    _setupContainer: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> container = <span class="keyword">this</span>._container;
+        container.classList.add(<span class="string">'mapboxgl-map'</span>);
+
+        <span class="keyword">var</span> canvasContainer = <span class="keyword">this</span>._canvasContainer = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-canvas-container'</span>, container);
+        <span class="keyword">if</span> (<span class="keyword">this</span>._interactive) {
+            canvasContainer.classList.add(<span class="string">'mapboxgl-interactive'</span>);
+        }
+        <span class="keyword">this</span>._canvas = <span class="keyword">new</span> Canvas(<span class="keyword">this</span>, canvasContainer);
+
+        <span class="keyword">var</span> controlContainer = <span class="keyword">this</span>._controlContainer = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-control-container'</span>, container);
+        <span class="keyword">var</span> corners = <span class="keyword">this</span>._controlCorners = {};
+        [<span class="string">'top-left'</span>, <span class="string">'top-right'</span>, <span class="string">'bottom-left'</span>, <span class="string">'bottom-right'</span>].forEach(<span class="function"><span class="keyword">function</span> <span class="params">(pos)</span> {</span>
+            corners[pos] = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-ctrl-'</span> + pos, controlContainer);
+        });
+    },
+
+    _setupPainter: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> gl = <span class="keyword">this</span>._canvas.getWebGLContext({
+            failIfMajorPerformanceCaveat: <span class="keyword">this</span>._failIfMajorPerformanceCaveat,
+            preserveDrawingBuffer: <span class="keyword">this</span>._preserveDrawingBuffer
+        });
+
+        <span class="keyword">if</span> (!gl) {
+            console.error(<span class="string">'Failed to initialize WebGL'</span>);
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">this</span>.painter = <span class="keyword">new</span> Painter(gl, <span class="keyword">this</span>.transform);
+    },
+
+    <span class="comment">/**
+     * WebGL Context Lost event.
+     *
+     * @event webglcontextlost
+     * @memberof Map
+     * @instance
+     * @type {Object}
+     * @property {Event} originalEvent the original DOM event
+     */</span>
+    _contextLost: <span class="keyword">function</span>(event) {
+        event.preventDefault();
+        <span class="keyword">if</span> (<span class="keyword">this</span>._frameId) {
+            browser.cancelFrame(<span class="keyword">this</span>._frameId);
+        }
+        <span class="keyword">this</span>.fire(<span class="string">"webglcontextlost"</span>, {originalEvent: event});
+    },
+
+    <span class="comment">/**
+     * WebGL Context Restored event.
+     *
+     * @event webglcontextrestored
+     * @memberof Map
+     * @instance
+     * @type {Object}
+     */</span>
+    _contextRestored: <span class="keyword">function</span>(event) {
+        <span class="keyword">this</span>._setupPainter();
+        <span class="keyword">this</span>.resize();
+        <span class="keyword">this</span>._update();
+        <span class="keyword">this</span>.fire(<span class="string">"webglcontextrestored"</span>, {originalEvent: event});
+    },
+
+    <span class="comment">/**
+     * Is this map fully loaded? If the style isn't loaded
+     * or it has a change to the sources or style that isn't
+     * propagated to its style, return false.
+     *
+     * @returns {boolean} whether the map is loaded
+     */</span>
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._styleDirty || <span class="keyword">this</span>._sourcesDirty)
+            <span class="keyword">return</span> <span class="literal">false</span>;
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.style || !<span class="keyword">this</span>.style.loaded())
+            <span class="keyword">return</span> <span class="literal">false</span>;
+        <span class="keyword">return</span> <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Update this map's style and sources, and re-render the map.
+     *
+     * @param {boolean} updateStyle mark the map's style for reprocessing as
+     * well as its sources
+     * @returns {Map} this
+     * @private
+     */</span>
+    _update: <span class="keyword">function</span>(updateStyle) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.style) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">this</span>._styleDirty = <span class="keyword">this</span>._styleDirty || updateStyle;
+        <span class="keyword">this</span>._sourcesDirty = <span class="literal">true</span>;
+
+        <span class="keyword">this</span>._rerender();
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Call when a (re-)render of the map is required, e.g. when the
+     * user panned or zoomed,f or new data is available.
+     * @returns {Map} this
+     * @private
+     */</span>
+    _render: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style &amp;&amp; <span class="keyword">this</span>._styleDirty) {
+            <span class="keyword">this</span>._styleDirty = <span class="literal">false</span>;
+            <span class="keyword">this</span>.style.update(<span class="keyword">this</span>._classes, <span class="keyword">this</span>._classOptions);
+            <span class="keyword">this</span>._classOptions = <span class="literal">null</span>;
+            <span class="keyword">this</span>.style._recalculate(<span class="keyword">this</span>.transform.zoom);
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style &amp;&amp; <span class="keyword">this</span>._sourcesDirty) {
+            <span class="keyword">this</span>._sourcesDirty = <span class="literal">false</span>;
+            <span class="keyword">this</span>.style._updateSources(<span class="keyword">this</span>.transform);
+        }
+
+        <span class="keyword">this</span>.painter.render(<span class="keyword">this</span>.style, {
+            debug: <span class="keyword">this</span>.showTileBoundaries,
+            showOverdrawInspector: <span class="keyword">this</span>._showOverdrawInspector,
+            vertices: <span class="keyword">this</span>.vertices,
+            rotating: <span class="keyword">this</span>.rotating,
+            zooming: <span class="keyword">this</span>.zooming
+        });
+
+        <span class="keyword">this</span>.fire(<span class="string">'render'</span>);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.loaded() &amp;&amp; !<span class="keyword">this</span>._loaded) {
+            <span class="keyword">this</span>._loaded = <span class="literal">true</span>;
+            <span class="keyword">this</span>.fire(<span class="string">'load'</span>);
+        }
+
+        <span class="keyword">this</span>._frameId = <span class="literal">null</span>;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.animationLoop.stopped()) {
+            <span class="keyword">this</span>._styleDirty = <span class="literal">true</span>;
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._sourcesDirty || <span class="keyword">this</span>._repaint || !<span class="keyword">this</span>.animationLoop.stopped()) {
+            <span class="keyword">this</span>._rerender();
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Destroys the map's underlying resources, including web workers and DOM elements. Afterwards,
+     * you must not call any further methods on this Map instance.
+     *
+     * @returns {undefined}
+     */</span>
+    remove: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._hash) <span class="keyword">this</span>._hash.remove();
+        browser.cancelFrame(<span class="keyword">this</span>._frameId);
+        <span class="keyword">this</span>.setStyle(<span class="literal">null</span>);
+        <span class="keyword">if</span> (<span class="keyword">typeof</span> window !== <span class="string">'undefined'</span>) {
+            window.removeEventListener(<span class="string">'resize'</span>, <span class="keyword">this</span>._onWindowResize, <span class="literal">false</span>);
+        }
+        removeNode(<span class="keyword">this</span>._canvasContainer);
+        removeNode(<span class="keyword">this</span>._controlContainer);
+        <span class="keyword">this</span>._container.classList.remove(<span class="string">'mapboxgl-map'</span>);
+    },
+
+    <span class="comment">/**
+     * A default error handler for `style.error`, `source.error`, `layer.error`,
+     * and `tile.error` events.
+     * It logs the error via `console.error`.
+     *
+     * @example
+     * // Disable the default error handler
+     * map.off('style.error', map.onError);
+     * map.off('source.error', map.onError);
+     * map.off('tile.error', map.onError);
+     * map.off('layer.error', map.onError);
+     */</span>
+    onError: <span class="keyword">function</span>(e) {
+        console.error(e.error);
+    },
+
+    _rerender: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.style &amp;&amp; !<span class="keyword">this</span>._frameId) {
+            <span class="keyword">this</span>._frameId = browser.frame(<span class="keyword">this</span>._render);
+        }
+    },
+
+    _forwardStyleEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(<span class="string">'style.'</span> + e.type, util.extend({style: e.target}, e));
+    },
+
+    _forwardSourceEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(e.type, util.extend({style: e.target}, e));
+    },
+
+    _forwardLayerEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(e.type, util.extend({style: e.target}, e));
+    },
+
+    _forwardTileEvent: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>.fire(e.type, util.extend({style: e.target}, e));
+    },
+
+    _onStyleLoad: <span class="keyword">function</span>(e) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.transform.unmodified) {
+            <span class="keyword">this</span>.jumpTo(<span class="keyword">this</span>.style.stylesheet);
+        }
+        <span class="keyword">this</span>.style.update(<span class="keyword">this</span>._classes, {transition: <span class="literal">false</span>});
+        <span class="keyword">this</span>._forwardStyleEvent(e);
+    },
+
+    _onStyleChange: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>._update(<span class="literal">true</span>);
+        <span class="keyword">this</span>._forwardStyleEvent(e);
+    },
+
+    _onSourceAdd: <span class="keyword">function</span>(e) {
+        <span class="keyword">var</span> source = e.source;
+        <span class="keyword">if</span> (source.onAdd)
+            source.onAdd(<span class="keyword">this</span>);
+        <span class="keyword">this</span>._forwardSourceEvent(e);
+    },
+
+    _onSourceRemove: <span class="keyword">function</span>(e) {
+        <span class="keyword">var</span> source = e.source;
+        <span class="keyword">if</span> (source.onRemove)
+            source.onRemove(<span class="keyword">this</span>);
+        <span class="keyword">this</span>._forwardSourceEvent(e);
+    },
+
+    _onSourceUpdate: <span class="keyword">function</span>(e) {
+        <span class="keyword">this</span>._update();
+        <span class="keyword">this</span>._forwardSourceEvent(e);
+    },
+
+    _onWindowResize: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>.stop().resize()._update();
+    }
+});
+
+util.extendAll(Map.prototype, <span class="comment">/** @lends Map.prototype */</span>{
+
+    <span class="comment">/**
+     * Draw an outline around each rendered tile for debugging.
+     *
+     * @name showTileBoundaries
+     * @type {boolean}
+     */</span>
+    _showTileBoundaries: <span class="literal">false</span>,
+    get showTileBoundaries() { <span class="keyword">return</span> <span class="keyword">this</span>._showTileBoundaries; },
+    set showTileBoundaries(value) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._showTileBoundaries === value) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._showTileBoundaries = value;
+        <span class="keyword">this</span>._update();
+    },
+
+    <span class="comment">/**
+     * Draw boxes around all symbols in the data source, showing which were
+     * rendered and which were hidden due to collisions with other symbols for
+     * style debugging.
+     *
+     * @name showCollisionBoxes
+     * @type {boolean}
+     */</span>
+    _showCollisionBoxes: <span class="literal">false</span>,
+    get showCollisionBoxes() { <span class="keyword">return</span> <span class="keyword">this</span>._showCollisionBoxes; },
+    set showCollisionBoxes(value) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._showCollisionBoxes === value) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._showCollisionBoxes = value;
+        <span class="keyword">this</span>.style._redoPlacement();
+    },
+
+    <span class="comment">/*
+     * Show how many times each fragment has been shaded. White fragments have
+     * been shaded 8 or more times. Black fragments have been shaded 0 times.
+     *
+     * @name showOverdraw
+     * @type {boolean}
+     */</span>
+    _showOverdrawInspector: <span class="literal">false</span>,
+    get showOverdrawInspector() { <span class="keyword">return</span> <span class="keyword">this</span>._showOverdrawInspector; },
+    set showOverdrawInspector(value) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._showOverdrawInspector === value) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._showOverdrawInspector = value;
+        <span class="keyword">this</span>._update();
+    },
+
+    <span class="comment">/**
+     * Enable continuous repaint to analyze performance.
+     *
+     * @name repaint
+     * @type {boolean}
+     */</span>
+    _repaint: <span class="literal">false</span>,
+    get repaint() { <span class="keyword">return</span> <span class="keyword">this</span>._repaint; },
+    set repaint(value) { <span class="keyword">this</span>._repaint = value; <span class="keyword">this</span>._update(); },
+
+    <span class="comment">// show vertices</span>
+    _vertices: <span class="literal">false</span>,
+    get vertices() { <span class="keyword">return</span> <span class="keyword">this</span>._vertices; },
+    set vertices(value) { <span class="keyword">this</span>._vertices = value; <span class="keyword">this</span>._update(); }
+});
+
+<span class="function"><span class="keyword">function</span> <span class="title">removeNode</span><span class="params">(node)</span> {</span>
+    <span class="keyword">if</span> (node.parentNode) {
+        node.parentNode.removeChild(node);
+    }
+}
+
+<span class="comment">/**
+ * Options common to Map#addClass, Map#removeClass, and Map#setClasses, controlling
+ * whether or not to smoothly transition property changes triggered by the class change.
+ *
+ * @typedef {Object} StyleOptions
+ * @property {boolean} transition
+ */</span>
+
+ <span class="comment">/**
+  * This event is fired whenever the map is drawn to the screen because of
+  *
+  *  - a change in map position, zoom, pitch, or bearing
+  *  - a change to the map style
+  *  - a change to a GeoJSON source
+  *  - a vector tile, GeoJSON file, glyph, or sprite being loaded
+  *
+  * @event render
+  * @memberof Map
+  * @instance
+  */</span>
+</code></pre>

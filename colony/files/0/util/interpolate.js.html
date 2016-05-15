@@ -1,0 +1,41 @@
+<h1>interpolate.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = interpolate;
+
+<span class="function"><span class="keyword">function</span> <span class="title">interpolate</span><span class="params">(a, b, t)</span> {</span>
+    <span class="keyword">return</span> (a * (<span class="number">1</span> - t)) + (b * t);
+}
+
+interpolate.number = interpolate;
+
+interpolate.vec2 = <span class="keyword">function</span>(from, to, t) {
+    <span class="keyword">return</span> [
+        interpolate(from[<span class="number">0</span>], to[<span class="number">0</span>], t),
+        interpolate(from[<span class="number">1</span>], to[<span class="number">1</span>], t)
+    ];
+};
+
+<span class="comment">/*
+ * Interpolate between two colors given as 4-element arrays.
+ *
+ * @param {Color} from
+ * @param {Color} to
+ * @param {number} t interpolation factor between 0 and 1
+ * @returns {Color} interpolated color
+ */</span>
+interpolate.color = <span class="keyword">function</span>(from, to, t) {
+    <span class="keyword">return</span> [
+        interpolate(from[<span class="number">0</span>], to[<span class="number">0</span>], t),
+        interpolate(from[<span class="number">1</span>], to[<span class="number">1</span>], t),
+        interpolate(from[<span class="number">2</span>], to[<span class="number">2</span>], t),
+        interpolate(from[<span class="number">3</span>], to[<span class="number">3</span>], t)
+    ];
+};
+
+interpolate.array = <span class="keyword">function</span>(from, to, t) {
+    <span class="keyword">return</span> from.map(<span class="keyword">function</span>(d, i) {
+        <span class="keyword">return</span> interpolate(d, to[i], t);
+    });
+};
+</code></pre>

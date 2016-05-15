@@ -1,0 +1,244 @@
+<h1>draw_fill.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> pixelsToTileUnits = require(<span class="string">'../source/pixels_to_tile_units'</span>);
+
+module.exports = draw;
+
+<span class="function"><span class="keyword">function</span> <span class="title">draw</span><span class="params">(painter, source, layer, coords)</span> {</span>
+    <span class="keyword">var</span> gl = painter.gl;
+    gl.enable(gl.STENCIL_TEST);
+
+    <span class="keyword">var</span> color = util.premultiply(layer.paint[<span class="string">'fill-color'</span>]);
+    <span class="keyword">var</span> image = layer.paint[<span class="string">'fill-pattern'</span>];
+    <span class="keyword">var</span> strokeColor = util.premultiply(layer.paint[<span class="string">'fill-outline-color'</span>]);
+    <span class="keyword">var</span> opacity = layer.paint[<span class="string">'fill-opacity'</span>];
+
+    <span class="comment">// Draw fill</span>
+    <span class="keyword">if</span> (image ? !painter.isOpaquePass : painter.isOpaquePass === (color[<span class="number">3</span>] === <span class="number">1</span> &amp;&amp; opacity === <span class="number">1</span>)) {
+        <span class="comment">// Once we switch to earcut drawing we can pull most of the WebGL setup</span>
+        <span class="comment">// outside of this coords loop.</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+            drawFill(painter, source, layer, coords[i]);
+        }
+    }
+
+    <span class="comment">// Draw stroke</span>
+    <span class="keyword">if</span> (!painter.isOpaquePass &amp;&amp; layer.paint[<span class="string">'fill-antialias'</span>]) {
+        <span class="keyword">if</span> (strokeColor || !layer.paint[<span class="string">'fill-pattern'</span>]) {
+            <span class="keyword">var</span> outlineProgram = painter.useProgram(<span class="string">'outline'</span>);
+            painter.lineWidth(<span class="number">2</span>);
+            painter.depthMask(<span class="literal">false</span>);
+
+            <span class="keyword">if</span> (strokeColor) {
+                <span class="comment">// If we defined a different color for the fill outline, we are</span>
+                <span class="comment">// going to ignore the bits in 0x07 and just care about the global</span>
+                <span class="comment">// clipping mask.</span>
+                painter.setDepthSublayer(<span class="number">2</span>);
+            } <span class="keyword">else</span> {
+                <span class="comment">// Otherwise, we only want to drawFill the antialiased parts that are</span>
+                <span class="comment">// *outside* the current shape. This is important in case the fill</span>
+                <span class="comment">// or stroke color is translucent. If we wouldn't clip to outside</span>
+                <span class="comment">// the current shape, some pixels from the outline stroke overlapped</span>
+                <span class="comment">// the (non-antialiased) fill.</span>
+                painter.setDepthSublayer(<span class="number">0</span>);
+            }
+            gl.uniform2f(outlineProgram.u_world, gl.drawingBufferWidth, gl.drawingBufferHeight);
+            gl.uniform4fv(outlineProgram.u_color, strokeColor ? strokeColor : color);
+            gl.uniform1f(outlineProgram.u_opacity, opacity);
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; coords.length; j++) {
+                drawStroke(painter, source, layer, coords[j]);
+            }
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> outlinePatternProgram = painter.useProgram(<span class="string">'outlinepattern'</span>);
+            painter.lineWidth(<span class="number">2</span>);
+            painter.depthMask(<span class="literal">false</span>);
+            <span class="comment">// Otherwise, we only want to drawFill the antialiased parts that are</span>
+            <span class="comment">// *outside* the current shape. This is important in case the fill</span>
+            <span class="comment">// or stroke color is translucent. If we wouldn't clip to outside</span>
+            <span class="comment">// the current shape, some pixels from the outline stroke overlapped</span>
+            <span class="comment">// the (non-antialiased) fill.</span>
+            painter.setDepthSublayer(<span class="number">0</span>);
+            gl.uniform2f(outlinePatternProgram.u_world, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; coords.length; k++) {
+                drawStroke(painter, source, layer, coords[k]);
+            }
+        }
+
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawFill</span><span class="params">(painter, source, layer, coord)</span> {</span>
+    <span class="keyword">var</span> tile = source.getTile(coord);
+    <span class="keyword">var</span> bucket = tile.getBucket(layer);
+    <span class="keyword">if</span> (!bucket) <span class="keyword">return</span>;
+    <span class="keyword">var</span> bufferGroups = bucket.bufferGroups.fill;
+    <span class="keyword">if</span> (!bufferGroups) <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> gl = painter.gl;
+
+    <span class="keyword">var</span> color = util.premultiply(layer.paint[<span class="string">'fill-color'</span>]);
+    <span class="keyword">var</span> image = layer.paint[<span class="string">'fill-pattern'</span>];
+    <span class="keyword">var</span> opacity = layer.paint[<span class="string">'fill-opacity'</span>];
+
+    <span class="keyword">var</span> posMatrix = coord.posMatrix;
+    <span class="keyword">var</span> translatedPosMatrix = painter.translatePosMatrix(posMatrix, tile, layer.paint[<span class="string">'fill-translate'</span>], layer.paint[<span class="string">'fill-translate-anchor'</span>]);
+
+    <span class="comment">// Draw the stencil mask.</span>
+    painter.setDepthSublayer(<span class="number">1</span>);
+
+    <span class="comment">// We're only drawFilling to the first seven bits (== support a maximum of</span>
+    <span class="comment">// 8 overlapping polygons in one place before we get rendering errors).</span>
+    gl.stencilMask(<span class="number">0x07</span>);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+
+    <span class="comment">// Draw front facing triangles. Wherever the 0x80 bit is 1, we are</span>
+    <span class="comment">// increasing the lower 7 bits by one if the triangle is a front-facing</span>
+    <span class="comment">// triangle. This means that all visible polygons should be in CCW</span>
+    <span class="comment">// orientation, while all holes (see below) are in CW orientation.</span>
+    painter.enableTileClippingMask(coord);
+
+    <span class="comment">// When we do a nonzero fill, we count the number of times a pixel is</span>
+    <span class="comment">// covered by a counterclockwise polygon, and subtract the number of</span>
+    <span class="comment">// times it is "uncovered" by a clockwise polygon.</span>
+    gl.stencilOpSeparate(gl.FRONT, gl.KEEP, gl.KEEP, gl.INCR_WRAP);
+    gl.stencilOpSeparate(gl.BACK, gl.KEEP, gl.KEEP, gl.DECR_WRAP);
+
+    <span class="comment">// When drawFilling a shape, we first drawFill all shapes to the stencil buffer</span>
+    <span class="comment">// and incrementing all areas where polygons are</span>
+    gl.colorMask(<span class="literal">false</span>, <span class="literal">false</span>, <span class="literal">false</span>, <span class="literal">false</span>);
+    painter.depthMask(<span class="literal">false</span>);
+
+    <span class="comment">// Draw the actual triangle fan into the stencil buffer.</span>
+    <span class="keyword">var</span> fillProgram = painter.useProgram(<span class="string">'fill'</span>);
+    gl.uniformMatrix4fv(fillProgram.u_matrix, <span class="literal">false</span>, translatedPosMatrix);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; bufferGroups.length; i++) {
+        <span class="keyword">var</span> group = bufferGroups[i];
+        group.vaos[layer.id].bind(gl, fillProgram, group.layout.vertex, group.layout.element);
+        gl.drawElements(gl.TRIANGLES, group.layout.element.length * <span class="number">3</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+    }
+
+    <span class="comment">// Now that we have the stencil mask in the stencil buffer, we can start</span>
+    <span class="comment">// writing to the color buffer.</span>
+    gl.colorMask(<span class="literal">true</span>, <span class="literal">true</span>, <span class="literal">true</span>, <span class="literal">true</span>);
+    painter.depthMask(<span class="literal">true</span>);
+
+    <span class="comment">// From now on, we don't want to update the stencil buffer anymore.</span>
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+    gl.stencilMask(<span class="number">0x0</span>);
+    <span class="keyword">var</span> program;
+
+    <span class="keyword">if</span> (image) {
+        <span class="comment">// Draw texture fill</span>
+        program = painter.useProgram(<span class="string">'pattern'</span>);
+        setPattern(image, opacity, tile, coord, painter, program);
+
+        gl.activeTexture(gl.TEXTURE0);
+        painter.spriteAtlas.bind(gl, <span class="literal">true</span>);
+
+        painter.tileExtentPatternVAO.bind(gl, program, painter.tileExtentBuffer);
+
+    } <span class="keyword">else</span> {
+        <span class="comment">// Draw filling rectangle.</span>
+        program = painter.useProgram(<span class="string">'fill'</span>);
+        gl.uniform4fv(fillProgram.u_color, color);
+        gl.uniform1f(fillProgram.u_opacity, opacity);
+        painter.tileExtentVAO.bind(gl, program, painter.tileExtentBuffer);
+    }
+
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, posMatrix);
+
+    <span class="comment">// Only draw regions that we marked</span>
+    gl.stencilFunc(gl.NOTEQUAL, <span class="number">0x0</span>, <span class="number">0x07</span>);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, <span class="number">0</span>, painter.tileExtentBuffer.length);
+
+    gl.stencilMask(<span class="number">0x00</span>);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawStroke</span><span class="params">(painter, source, layer, coord)</span> {</span>
+    <span class="keyword">var</span> tile = source.getTile(coord);
+    <span class="keyword">var</span> bucket = tile.getBucket(layer);
+    <span class="keyword">if</span> (!bucket) <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> gl = painter.gl;
+    <span class="keyword">var</span> bufferGroups = bucket.bufferGroups.fill;
+
+    <span class="keyword">var</span> image = layer.paint[<span class="string">'fill-pattern'</span>];
+    <span class="keyword">var</span> opacity = layer.paint[<span class="string">'fill-opacity'</span>];
+    <span class="keyword">var</span> program = image ? painter.useProgram(<span class="string">'outlinepattern'</span>) : painter.useProgram(<span class="string">'outline'</span>);
+
+    gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, painter.translatePosMatrix(
+        coord.posMatrix,
+        tile,
+        layer.paint[<span class="string">'fill-translate'</span>],
+        layer.paint[<span class="string">'fill-translate-anchor'</span>]
+    ));
+
+    <span class="keyword">if</span> (image) { setPattern(image, opacity, tile, coord, painter, program); }
+
+    painter.enableTileClippingMask(coord);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; bufferGroups.length; k++) {
+        <span class="keyword">var</span> group = bufferGroups[k];
+        group.secondVaos[layer.id].bind(gl, program, group.layout.vertex, group.layout.element2);
+        gl.drawElements(gl.LINES, group.layout.element2.length * <span class="number">2</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+    }
+}
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">setPattern</span><span class="params">(image, opacity, tile, coord, painter, program)</span> {</span>
+    <span class="keyword">var</span> gl = painter.gl;
+
+    <span class="keyword">var</span> imagePosA = painter.spriteAtlas.getPosition(image.from, <span class="literal">true</span>);
+    <span class="keyword">var</span> imagePosB = painter.spriteAtlas.getPosition(image.to, <span class="literal">true</span>);
+    <span class="keyword">if</span> (!imagePosA || !imagePosB) <span class="keyword">return</span>;
+
+
+    gl.uniform1i(program.u_image, <span class="number">0</span>);
+    gl.uniform2fv(program.u_pattern_tl_a, imagePosA.tl);
+    gl.uniform2fv(program.u_pattern_br_a, imagePosA.br);
+    gl.uniform2fv(program.u_pattern_tl_b, imagePosB.tl);
+    gl.uniform2fv(program.u_pattern_br_b, imagePosB.br);
+    gl.uniform1f(program.u_opacity, opacity);
+    gl.uniform1f(program.u_mix, image.t);
+
+    <span class="keyword">var</span> imageSizeScaledA = [
+        (imagePosA.size[<span class="number">0</span>] * image.fromScale),
+        (imagePosA.size[<span class="number">1</span>] * image.fromScale)
+    ];
+    <span class="keyword">var</span> imageSizeScaledB = [
+        (imagePosB.size[<span class="number">0</span>] * image.toScale),
+        (imagePosB.size[<span class="number">1</span>] * image.toScale)
+    ];
+
+    gl.uniform2fv(program.u_patternscale_a, [
+        <span class="number">1</span> / pixelsToTileUnits(tile, imageSizeScaledA[<span class="number">0</span>], painter.transform.tileZoom),
+        <span class="number">1</span> / pixelsToTileUnits(tile, imageSizeScaledA[<span class="number">1</span>], painter.transform.tileZoom)
+    ]);
+
+    gl.uniform2fv(program.u_patternscale_b, [
+        <span class="number">1</span> / pixelsToTileUnits(tile, imageSizeScaledB[<span class="number">0</span>], painter.transform.tileZoom),
+        <span class="number">1</span> / pixelsToTileUnits(tile, imageSizeScaledB[<span class="number">1</span>], painter.transform.tileZoom)
+    ]);
+
+    <span class="keyword">var</span> tileSizeAtNearestZoom = tile.tileSize * Math.pow(<span class="number">2</span>, painter.transform.tileZoom - tile.coord.z);
+
+    <span class="comment">// shift images to match at tile boundaries</span>
+    <span class="keyword">var</span> offsetAx = ((tileSizeAtNearestZoom / imageSizeScaledA[<span class="number">0</span>]) % <span class="number">1</span>) * (tile.coord.x + coord.w * Math.pow(<span class="number">2</span>, tile.coord.z));
+    <span class="keyword">var</span> offsetAy = ((tileSizeAtNearestZoom / imageSizeScaledA[<span class="number">1</span>]) % <span class="number">1</span>) * tile.coord.y;
+
+    <span class="keyword">var</span> offsetBx = ((tileSizeAtNearestZoom / imageSizeScaledB[<span class="number">0</span>]) % <span class="number">1</span>) * (tile.coord.x + coord.w * Math.pow(<span class="number">2</span>, tile.coord.z));
+    <span class="keyword">var</span> offsetBy = ((tileSizeAtNearestZoom / imageSizeScaledB[<span class="number">1</span>]) % <span class="number">1</span>) * tile.coord.y;
+
+    gl.uniform2fv(program.u_offset_a, [offsetAx, offsetAy]);
+    gl.uniform2fv(program.u_offset_b, [offsetBx, offsetBy]);
+
+    gl.activeTexture(gl.TEXTURE0);
+    painter.spriteAtlas.bind(gl, <span class="literal">true</span>);
+}
+</code></pre>

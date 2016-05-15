@@ -1,0 +1,16 @@
+{
+  "name": "mapbox-gl-architecture",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "colony --no-modules node_modules/mapbox-gl/js/mapbox-gl.js"
+  },
+  "keywords": [],
+  "author": "Anand Thakker <vestibule@anandthakker.net> (http://anandthakker.net/)",
+  "license": "ISC",
+  "dependencies": {
+    "colony": "github:anandthakker/colony#mapbox-gl-viz",
+    "mapbox-gl": "^0.18.0"
+  }
+}

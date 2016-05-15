@@ -1,0 +1,301 @@
+<h1>collision_tile.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+<span class="keyword">var</span> Grid = require(<span class="string">'grid-index'</span>);
+
+module.exports = CollisionTile;
+
+<span class="comment">/**
+ * A collision tile used to prevent symbols from overlapping. It keep tracks of
+ * where previous symbols have been placed and is used to check if a new
+ * symbol overlaps with any previously added symbols.
+ *
+ * @class CollisionTile
+ * @param {number} angle
+ * @param {number} pitch
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">CollisionTile</span><span class="params">(angle, pitch, collisionBoxArray)</span> {</span>
+    <span class="keyword">if</span> (<span class="keyword">typeof</span> angle === <span class="string">'object'</span>) {
+        <span class="keyword">var</span> serialized = angle;
+        collisionBoxArray = pitch;
+        angle = serialized.angle;
+        pitch = serialized.pitch;
+        <span class="keyword">this</span>.grid = <span class="keyword">new</span> Grid(serialized.grid);
+        <span class="keyword">this</span>.ignoredGrid = <span class="keyword">new</span> Grid(serialized.ignoredGrid);
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.grid = <span class="keyword">new</span> Grid(EXTENT, <span class="number">12</span>, <span class="number">6</span>);
+        <span class="keyword">this</span>.ignoredGrid = <span class="keyword">new</span> Grid(EXTENT, <span class="number">12</span>, <span class="number">0</span>);
+    }
+
+    <span class="keyword">this</span>.angle = angle;
+    <span class="keyword">this</span>.pitch = pitch;
+
+    <span class="keyword">var</span> sin = Math.sin(angle),
+        cos = Math.cos(angle);
+    <span class="keyword">this</span>.rotationMatrix = [cos, -sin, sin, cos];
+    <span class="keyword">this</span>.reverseRotationMatrix = [cos, sin, -sin, cos];
+
+    <span class="comment">// Stretch boxes in y direction to account for the map tilt.</span>
+    <span class="keyword">this</span>.yStretch = <span class="number">1</span> / Math.cos(pitch / <span class="number">180</span> * Math.PI);
+
+    <span class="comment">// The amount the map is squished depends on the y position.</span>
+    <span class="comment">// Sort of account for this by making all boxes a bit bigger.</span>
+    <span class="keyword">this</span>.yStretch = Math.pow(<span class="keyword">this</span>.yStretch, <span class="number">1.3</span>);
+
+    <span class="keyword">this</span>.collisionBoxArray = collisionBoxArray;
+    <span class="keyword">if</span> (collisionBoxArray.length === <span class="number">0</span>) {
+        <span class="comment">// the first collisionBoxArray is passed to a CollisionTile</span>
+
+        <span class="comment">// tempCollisionBox</span>
+        collisionBoxArray.emplaceBack();
+
+        <span class="keyword">var</span> maxInt16 = <span class="number">32767</span>;
+        <span class="comment">//left</span>
+        collisionBoxArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, -maxInt16, <span class="number">0</span>, maxInt16, maxInt16,
+                <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+                <span class="number">0</span>);
+        <span class="comment">// right</span>
+        collisionBoxArray.emplaceBack(EXTENT, <span class="number">0</span>, <span class="number">0</span>, -maxInt16, <span class="number">0</span>, maxInt16, maxInt16,
+                <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+                <span class="number">0</span>);
+        <span class="comment">// top</span>
+        collisionBoxArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>, -maxInt16, <span class="number">0</span>, maxInt16, <span class="number">0</span>, maxInt16,
+                <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+                <span class="number">0</span>);
+        <span class="comment">// bottom</span>
+        collisionBoxArray.emplaceBack(<span class="number">0</span>, EXTENT, -maxInt16, <span class="number">0</span>, maxInt16, <span class="number">0</span>, maxInt16,
+                <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+                <span class="number">0</span>);
+    }
+
+    <span class="keyword">this</span>.tempCollisionBox = collisionBoxArray.get(<span class="number">0</span>);
+    <span class="keyword">this</span>.edges = [
+        collisionBoxArray.get(<span class="number">1</span>),
+        collisionBoxArray.get(<span class="number">2</span>),
+        collisionBoxArray.get(<span class="number">3</span>),
+        collisionBoxArray.get(<span class="number">4</span>)
+    ];
+}
+
+CollisionTile.prototype.serialize = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> data = {
+        angle: <span class="keyword">this</span>.angle,
+        pitch: <span class="keyword">this</span>.pitch,
+        grid: <span class="keyword">this</span>.grid.toArrayBuffer(),
+        ignoredGrid: <span class="keyword">this</span>.ignoredGrid.toArrayBuffer()
+    };
+    <span class="keyword">return</span> {
+        data: data,
+        transferables: [data.grid, data.ignoredGrid]
+    };
+};
+
+CollisionTile.prototype.minScale = <span class="number">0.25</span>;
+CollisionTile.prototype.maxScale = <span class="number">2</span>;
+
+
+<span class="comment">/**
+ * Find the scale at which the collisionFeature can be shown without
+ * overlapping with other features.
+ *
+ * @param {CollisionFeature} collisionFeature
+ * @returns {number} placementScale
+ * @private
+ */</span>
+CollisionTile.prototype.placeCollisionFeature = <span class="keyword">function</span>(collisionFeature, allowOverlap, avoidEdges) {
+
+    <span class="keyword">var</span> collisionBoxArray = <span class="keyword">this</span>.collisionBoxArray;
+    <span class="keyword">var</span> minPlacementScale = <span class="keyword">this</span>.minScale;
+    <span class="keyword">var</span> rotationMatrix = <span class="keyword">this</span>.rotationMatrix;
+    <span class="keyword">var</span> yStretch = <span class="keyword">this</span>.yStretch;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> b = collisionFeature.boxStartIndex; b &lt; collisionFeature.boxEndIndex; b++) {
+
+        <span class="keyword">var</span> box = collisionBoxArray.get(b);
+
+        <span class="keyword">var</span> anchorPoint = box.anchorPoint._matMult(rotationMatrix);
+        <span class="keyword">var</span> x = anchorPoint.x;
+        <span class="keyword">var</span> y = anchorPoint.y;
+
+        <span class="keyword">var</span> x1 = x + box.x1;
+        <span class="keyword">var</span> y1 = y + box.y1 * yStretch;
+        <span class="keyword">var</span> x2 = x + box.x2;
+        <span class="keyword">var</span> y2 = y + box.y2 * yStretch;
+
+        box.bbox0 = x1;
+        box.bbox1 = y1;
+        box.bbox2 = x2;
+        box.bbox3 = y2;
+
+        <span class="keyword">if</span> (!allowOverlap) {
+            <span class="keyword">var</span> blockingBoxes = <span class="keyword">this</span>.grid.query(x1, y1, x2, y2);
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; blockingBoxes.length; i++) {
+                <span class="keyword">var</span> blocking = collisionBoxArray.get(blockingBoxes[i]);
+                <span class="keyword">var</span> blockingAnchorPoint = blocking.anchorPoint._matMult(rotationMatrix);
+
+                minPlacementScale = <span class="keyword">this</span>.getPlacementScale(minPlacementScale, anchorPoint, box, blockingAnchorPoint, blocking);
+                <span class="keyword">if</span> (minPlacementScale >= <span class="keyword">this</span>.maxScale) {
+                    <span class="keyword">return</span> minPlacementScale;
+                }
+            }
+        }
+
+        <span class="keyword">if</span> (avoidEdges) {
+            <span class="keyword">var</span> rotatedCollisionBox;
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.angle) {
+                <span class="keyword">var</span> reverseRotationMatrix = <span class="keyword">this</span>.reverseRotationMatrix;
+                <span class="keyword">var</span> tl = <span class="keyword">new</span> Point(box.x1, box.y1).matMult(reverseRotationMatrix);
+                <span class="keyword">var</span> tr = <span class="keyword">new</span> Point(box.x2, box.y1).matMult(reverseRotationMatrix);
+                <span class="keyword">var</span> bl = <span class="keyword">new</span> Point(box.x1, box.y2).matMult(reverseRotationMatrix);
+                <span class="keyword">var</span> br = <span class="keyword">new</span> Point(box.x2, box.y2).matMult(reverseRotationMatrix);
+
+                rotatedCollisionBox = <span class="keyword">this</span>.tempCollisionBox;
+                rotatedCollisionBox.anchorPointX = box.anchorPoint.x;
+                rotatedCollisionBox.anchorPointY = box.anchorPoint.y;
+                rotatedCollisionBox.x1 = Math.min(tl.x, tr.x, bl.x, br.x);
+                rotatedCollisionBox.y1 = Math.min(tl.y, tr.x, bl.x, br.x);
+                rotatedCollisionBox.x2 = Math.max(tl.x, tr.x, bl.x, br.x);
+                rotatedCollisionBox.y2 = Math.max(tl.y, tr.x, bl.x, br.x);
+                rotatedCollisionBox.maxScale = box.maxScale;
+            } <span class="keyword">else</span> {
+                rotatedCollisionBox = box;
+            }
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; <span class="keyword">this</span>.edges.length; k++) {
+                <span class="keyword">var</span> edgeBox = <span class="keyword">this</span>.edges[k];
+                minPlacementScale = <span class="keyword">this</span>.getPlacementScale(minPlacementScale, box.anchorPoint, rotatedCollisionBox, edgeBox.anchorPoint, edgeBox);
+                <span class="keyword">if</span> (minPlacementScale >= <span class="keyword">this</span>.maxScale) {
+                    <span class="keyword">return</span> minPlacementScale;
+                }
+            }
+        }
+    }
+
+    <span class="keyword">return</span> minPlacementScale;
+};
+
+CollisionTile.prototype.queryRenderedSymbols = <span class="keyword">function</span>(minX, minY, maxX, maxY, scale) {
+    <span class="keyword">var</span> sourceLayerFeatures = {};
+    <span class="keyword">var</span> result = [];
+
+    <span class="keyword">var</span> collisionBoxArray = <span class="keyword">this</span>.collisionBoxArray;
+    <span class="keyword">var</span> rotationMatrix = <span class="keyword">this</span>.rotationMatrix;
+    <span class="keyword">var</span> anchorPoint = <span class="keyword">new</span> Point(minX, minY)._matMult(rotationMatrix);
+
+    <span class="keyword">var</span> queryBox = <span class="keyword">this</span>.tempCollisionBox;
+    queryBox.anchorX = anchorPoint.x;
+    queryBox.anchorY = anchorPoint.y;
+    queryBox.x1 = <span class="number">0</span>;
+    queryBox.y1 = <span class="number">0</span>;
+    queryBox.x2 = maxX - minX;
+    queryBox.y2 = maxY - minY;
+    queryBox.maxScale = scale;
+
+    <span class="comment">// maxScale is stored using a Float32. Convert `scale` to the stored Float32 value.</span>
+    scale = queryBox.maxScale;
+
+    <span class="keyword">var</span> searchBox = [
+        anchorPoint.x + queryBox.x1 / scale,
+        anchorPoint.y + queryBox.y1 / scale * <span class="keyword">this</span>.yStretch,
+        anchorPoint.x + queryBox.x2 / scale,
+        anchorPoint.y + queryBox.y2 / scale * <span class="keyword">this</span>.yStretch
+    ];
+
+    <span class="keyword">var</span> blockingBoxKeys = <span class="keyword">this</span>.grid.query(searchBox[<span class="number">0</span>], searchBox[<span class="number">1</span>], searchBox[<span class="number">2</span>], searchBox[<span class="number">3</span>]);
+    <span class="keyword">var</span> blockingBoxKeys2 = <span class="keyword">this</span>.ignoredGrid.query(searchBox[<span class="number">0</span>], searchBox[<span class="number">1</span>], searchBox[<span class="number">2</span>], searchBox[<span class="number">3</span>]);
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; blockingBoxKeys2.length; k++) {
+        blockingBoxKeys.push(blockingBoxKeys2[k]);
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; blockingBoxKeys.length; i++) {
+        <span class="keyword">var</span> blocking = collisionBoxArray.get(blockingBoxKeys[i]);
+
+        <span class="keyword">var</span> sourceLayer = blocking.sourceLayerIndex;
+        <span class="keyword">var</span> featureIndex = blocking.featureIndex;
+        <span class="keyword">if</span> (sourceLayerFeatures[sourceLayer] === <span class="literal">undefined</span>) {
+            sourceLayerFeatures[sourceLayer] = {};
+        }
+
+        <span class="keyword">if</span> (!sourceLayerFeatures[sourceLayer][featureIndex]) {
+            <span class="keyword">var</span> blockingAnchorPoint = blocking.anchorPoint.matMult(rotationMatrix);
+            <span class="keyword">var</span> minPlacementScale = <span class="keyword">this</span>.getPlacementScale(<span class="keyword">this</span>.minScale, anchorPoint, queryBox, blockingAnchorPoint, blocking);
+            <span class="keyword">if</span> (minPlacementScale >= scale) {
+                sourceLayerFeatures[sourceLayer][featureIndex] = <span class="literal">true</span>;
+                result.push(blockingBoxKeys[i]);
+            }
+        }
+    }
+
+    <span class="keyword">return</span> result;
+};
+
+CollisionTile.prototype.getPlacementScale = <span class="keyword">function</span>(minPlacementScale, anchorPoint, box, blockingAnchorPoint, blocking) {
+
+    <span class="comment">// Find the lowest scale at which the two boxes can fit side by side without overlapping.</span>
+    <span class="comment">// Original algorithm:</span>
+    <span class="keyword">var</span> anchorDiffX = anchorPoint.x - blockingAnchorPoint.x;
+    <span class="keyword">var</span> anchorDiffY = anchorPoint.y - blockingAnchorPoint.y;
+    <span class="keyword">var</span> s1 = (blocking.x1 - box.x2) / anchorDiffX; <span class="comment">// scale at which new box is to the left of old box</span>
+    <span class="keyword">var</span> s2 = (blocking.x2 - box.x1) / anchorDiffX; <span class="comment">// scale at which new box is to the right of old box</span>
+    <span class="keyword">var</span> s3 = (blocking.y1 - box.y2) * <span class="keyword">this</span>.yStretch / anchorDiffY; <span class="comment">// scale at which new box is to the top of old box</span>
+    <span class="keyword">var</span> s4 = (blocking.y2 - box.y1) * <span class="keyword">this</span>.yStretch / anchorDiffY; <span class="comment">// scale at which new box is to the bottom of old box</span>
+
+    <span class="keyword">if</span> (isNaN(s1) || isNaN(s2)) s1 = s2 = <span class="number">1</span>;
+    <span class="keyword">if</span> (isNaN(s3) || isNaN(s4)) s3 = s4 = <span class="number">1</span>;
+
+    <span class="keyword">var</span> collisionFreeScale = Math.min(Math.max(s1, s2), Math.max(s3, s4));
+    <span class="keyword">var</span> blockingMaxScale = blocking.maxScale;
+    <span class="keyword">var</span> boxMaxScale = box.maxScale;
+
+    <span class="keyword">if</span> (collisionFreeScale > blockingMaxScale) {
+        <span class="comment">// After a box's maxScale the label has shrunk enough that the box is no longer needed to cover it,</span>
+        <span class="comment">// so unblock the new box at the scale that the old box disappears.</span>
+        collisionFreeScale = blockingMaxScale;
+    }
+
+    <span class="keyword">if</span> (collisionFreeScale > boxMaxScale) {
+        <span class="comment">// If the box can only be shown after it is visible, then the box can never be shown.</span>
+        <span class="comment">// But the label can be shown after this box is not visible.</span>
+        collisionFreeScale = boxMaxScale;
+    }
+
+    <span class="keyword">if</span> (collisionFreeScale > minPlacementScale &amp;&amp;
+            collisionFreeScale >= blocking.placementScale) {
+        <span class="comment">// If this collision occurs at a lower scale than previously found collisions</span>
+        <span class="comment">// and the collision occurs while the other label is visible</span>
+
+        <span class="comment">// this this is the lowest scale at which the label won't collide with anything</span>
+        minPlacementScale = collisionFreeScale;
+    }
+
+    <span class="keyword">return</span> minPlacementScale;
+};
+
+
+<span class="comment">/**
+ * Remember this collisionFeature and what scale it was placed at to block
+ * later features from overlapping with it.
+ *
+ * @param {CollisionFeature} collisionFeature
+ * @param {number} minPlacementScale
+ * @private
+ */</span>
+CollisionTile.prototype.insertCollisionFeature = <span class="keyword">function</span>(collisionFeature, minPlacementScale, ignorePlacement) {
+
+    <span class="keyword">var</span> grid = ignorePlacement ? <span class="keyword">this</span>.ignoredGrid : <span class="keyword">this</span>.grid;
+    <span class="keyword">var</span> collisionBoxArray = <span class="keyword">this</span>.collisionBoxArray;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = collisionFeature.boxStartIndex; k &lt; collisionFeature.boxEndIndex; k++) {
+        <span class="keyword">var</span> box = collisionBoxArray.get(k);
+        box.placementScale = minPlacementScale;
+        <span class="keyword">if</span> (minPlacementScale &lt; <span class="keyword">this</span>.maxScale) {
+            grid.insert(k, box.bbox0, box.bbox1, box.bbox2, box.bbox3);
+        }
+    }
+};
+</code></pre>

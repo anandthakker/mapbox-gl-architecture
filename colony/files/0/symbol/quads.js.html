@@ -1,0 +1,253 @@
+<h1>quads.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+module.exports = {
+    getIconQuads: getIconQuads,
+    getGlyphQuads: getGlyphQuads
+};
+
+<span class="keyword">var</span> minScale = <span class="number">0.5</span>; <span class="comment">// underscale by 1 zoom level</span>
+
+<span class="comment">/**
+ * A textured quad for rendering a single icon or glyph.
+ *
+ * The zoom range the glyph can be shown is defined by minScale and maxScale.
+ *
+ * @param {Point} anchorPoint the point the symbol is anchored around
+ * @param {Point} tl The offset of the top left corner from the anchor.
+ * @param {Point} tr The offset of the top right corner from the anchor.
+ * @param {Point} bl The offset of the bottom left corner from the anchor.
+ * @param {Point} br The offset of the bottom right corner from the anchor.
+ * @param {Object} tex The texture coordinates.
+ * @param {number} angle The angle of the label at it's center, not the angle of this quad.
+ * @param {number} minScale The minimum scale, relative to the tile's intended scale, that the glyph can be shown at.
+ * @param {number} maxScale The maximum scale, relative to the tile's intended scale, that the glyph can be shown at.
+ *
+ * @class SymbolQuad
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">SymbolQuad</span><span class="params">(anchorPoint, tl, tr, bl, br, tex, angle, minScale, maxScale)</span> {</span>
+    <span class="keyword">this</span>.anchorPoint = anchorPoint;
+    <span class="keyword">this</span>.tl = tl;
+    <span class="keyword">this</span>.tr = tr;
+    <span class="keyword">this</span>.bl = bl;
+    <span class="keyword">this</span>.br = br;
+    <span class="keyword">this</span>.tex = tex;
+    <span class="keyword">this</span>.angle = angle;
+    <span class="keyword">this</span>.minScale = minScale;
+    <span class="keyword">this</span>.maxScale = maxScale;
+}
+
+<span class="comment">/**
+ * Create the quads used for rendering an icon.
+ *
+ * @param {Anchor} anchor
+ * @param {PositionedIcon} shapedIcon
+ * @param {number} boxScale A magic number for converting glyph metric units to geometry units.
+ * @param {Array&lt;Array&lt;Point>>} line
+ * @param {LayoutProperties} layout
+ * @param {boolean} alongLine Whether the icon should be placed along the line.
+ * @returns {Array&lt;SymbolQuad>}
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">getIconQuads</span><span class="params">(anchor, shapedIcon, boxScale, line, layout, alongLine)</span> {</span>
+
+    <span class="keyword">var</span> rect = shapedIcon.image.rect;
+
+    <span class="keyword">var</span> border = <span class="number">1</span>;
+    <span class="keyword">var</span> left = shapedIcon.left - border;
+    <span class="keyword">var</span> right = left + rect.w / shapedIcon.image.pixelRatio;
+    <span class="keyword">var</span> top = shapedIcon.top - border;
+    <span class="keyword">var</span> bottom = top + rect.h / shapedIcon.image.pixelRatio;
+    <span class="keyword">var</span> tl = <span class="keyword">new</span> Point(left, top);
+    <span class="keyword">var</span> tr = <span class="keyword">new</span> Point(right, top);
+    <span class="keyword">var</span> br = <span class="keyword">new</span> Point(right, bottom);
+    <span class="keyword">var</span> bl = <span class="keyword">new</span> Point(left, bottom);
+
+    <span class="keyword">var</span> angle = layout[<span class="string">'icon-rotate'</span>] * Math.PI / <span class="number">180</span>;
+    <span class="keyword">if</span> (alongLine) {
+        <span class="keyword">var</span> prev = line[anchor.segment];
+        <span class="keyword">if</span> (anchor.y === prev.y &amp;&amp; anchor.x === prev.x &amp;&amp; anchor.segment + <span class="number">1</span> &lt; line.length) {
+            <span class="keyword">var</span> next = line[anchor.segment + <span class="number">1</span>];
+            angle += Math.atan2(anchor.y - next.y, anchor.x - next.x) + Math.PI;
+        } <span class="keyword">else</span> {
+            angle += Math.atan2(anchor.y - prev.y, anchor.x - prev.x);
+        }
+    }
+
+    <span class="keyword">if</span> (angle) {
+        <span class="keyword">var</span> sin = Math.sin(angle),
+            cos = Math.cos(angle),
+            matrix = [cos, -sin, sin, cos];
+
+        tl = tl.matMult(matrix);
+        tr = tr.matMult(matrix);
+        bl = bl.matMult(matrix);
+        br = br.matMult(matrix);
+    }
+
+    <span class="keyword">return</span> [<span class="keyword">new</span> SymbolQuad(<span class="keyword">new</span> Point(anchor.x, anchor.y), tl, tr, bl, br, shapedIcon.image.rect, <span class="number">0</span>, minScale, <span class="literal">Infinity</span>)];
+}
+
+<span class="comment">/**
+ * Create the quads used for rendering a text label.
+ *
+ * @param {Anchor} anchor
+ * @param {Shaping} shaping
+ * @param {number} boxScale A magic number for converting from glyph metric units to geometry units.
+ * @param {Array&lt;Array&lt;Point>>} line
+ * @param {LayoutProperties} layout
+ * @param {boolean} alongLine Whether the label should be placed along the line.
+ * @returns {Array&lt;SymbolQuad>}
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">getGlyphQuads</span><span class="params">(anchor, shaping, boxScale, line, layout, alongLine)</span> {</span>
+
+    <span class="keyword">var</span> textRotate = layout[<span class="string">'text-rotate'</span>] * Math.PI / <span class="number">180</span>;
+    <span class="keyword">var</span> keepUpright = layout[<span class="string">'text-keep-upright'</span>];
+
+    <span class="keyword">var</span> positionedGlyphs = shaping.positionedGlyphs;
+    <span class="keyword">var</span> quads = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; positionedGlyphs.length; k++) {
+        <span class="keyword">var</span> positionedGlyph = positionedGlyphs[k];
+        <span class="keyword">var</span> glyph = positionedGlyph.glyph;
+        <span class="keyword">var</span> rect = glyph.rect;
+
+        <span class="keyword">if</span> (!rect) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> centerX = (positionedGlyph.x + glyph.advance / <span class="number">2</span>) * boxScale;
+
+        <span class="keyword">var</span> glyphInstances;
+        <span class="keyword">var</span> labelMinScale = minScale;
+        <span class="keyword">if</span> (alongLine) {
+            glyphInstances = [];
+            labelMinScale = getSegmentGlyphs(glyphInstances, anchor, centerX, line, anchor.segment, <span class="literal">true</span>);
+            <span class="keyword">if</span> (keepUpright) {
+                labelMinScale = Math.min(labelMinScale, getSegmentGlyphs(glyphInstances, anchor, centerX, line, anchor.segment, <span class="literal">false</span>));
+            }
+
+        } <span class="keyword">else</span> {
+            glyphInstances = [{
+                anchorPoint: <span class="keyword">new</span> Point(anchor.x, anchor.y),
+                offset: <span class="number">0</span>,
+                angle: <span class="number">0</span>,
+                maxScale: <span class="literal">Infinity</span>,
+                minScale: minScale
+            }];
+        }
+
+        <span class="keyword">var</span> x1 = positionedGlyph.x + glyph.left,
+            y1 = positionedGlyph.y - glyph.top,
+            x2 = x1 + rect.w,
+            y2 = y1 + rect.h,
+
+            otl = <span class="keyword">new</span> Point(x1, y1),
+            otr = <span class="keyword">new</span> Point(x2, y1),
+            obl = <span class="keyword">new</span> Point(x1, y2),
+            obr = <span class="keyword">new</span> Point(x2, y2);
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; glyphInstances.length; i++) {
+
+            <span class="keyword">var</span> instance = glyphInstances[i],
+                tl = otl,
+                tr = otr,
+                bl = obl,
+                br = obr,
+                angle = instance.angle + textRotate;
+
+            <span class="keyword">if</span> (angle) {
+                <span class="keyword">var</span> sin = Math.sin(angle),
+                    cos = Math.cos(angle),
+                    matrix = [cos, -sin, sin, cos];
+
+                tl = tl.matMult(matrix);
+                tr = tr.matMult(matrix);
+                bl = bl.matMult(matrix);
+                br = br.matMult(matrix);
+            }
+
+            <span class="comment">// Prevent label from extending past the end of the line</span>
+            <span class="keyword">var</span> glyphMinScale = Math.max(instance.minScale, labelMinScale);
+
+            <span class="keyword">var</span> glyphAngle = (anchor.angle + textRotate + instance.offset + <span class="number">2</span> * Math.PI) % (<span class="number">2</span> * Math.PI);
+            quads.push(<span class="keyword">new</span> SymbolQuad(instance.anchorPoint, tl, tr, bl, br, rect, glyphAngle, glyphMinScale, instance.maxScale));
+
+        }
+    }
+
+    <span class="keyword">return</span> quads;
+}
+
+<span class="comment">/**
+ * We can only render glyph quads that slide along a straight line. To draw
+ * curved lines we need an instance of a glyph for each segment it appears on.
+ * This creates all the instances of a glyph that are necessary to render a label.
+ *
+ * We need a
+ * @param {Array&lt;Object>} glyphInstances An empty array that glyphInstances are added to.
+ * @param {Anchor} anchor
+ * @param {number} offset The glyph's offset from the center of the label.
+ * @param {Array&lt;Point>} line
+ * @param {number} segment The index of the segment of the line on which the anchor exists.
+ * @param {boolean} forward If true get the glyphs that come later on the line, otherwise get the glyphs that come earlier.
+ *
+ * @returns {Array&lt;Object>} glyphInstances
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">getSegmentGlyphs</span><span class="params">(glyphs, anchor, offset, line, segment, forward)</span> {</span>
+    <span class="keyword">var</span> upsideDown = !forward;
+
+    <span class="keyword">if</span> (offset &lt; <span class="number">0</span>) forward = !forward;
+
+    <span class="keyword">if</span> (forward) segment++;
+
+    <span class="keyword">var</span> newAnchorPoint = <span class="keyword">new</span> Point(anchor.x, anchor.y);
+    <span class="keyword">var</span> end = line[segment];
+    <span class="keyword">var</span> prevScale = <span class="literal">Infinity</span>;
+
+    offset = Math.abs(offset);
+
+    <span class="keyword">var</span> placementScale = minScale;
+
+    <span class="keyword">while</span> (<span class="literal">true</span>) {
+        <span class="keyword">var</span> distance = newAnchorPoint.dist(end);
+        <span class="keyword">var</span> scale = offset / distance;
+
+        <span class="comment">// Get the angle of the line segment</span>
+        <span class="keyword">var</span> angle = Math.atan2(end.y - newAnchorPoint.y, end.x - newAnchorPoint.x);
+        <span class="keyword">if</span> (!forward) angle += Math.PI;
+        <span class="keyword">if</span> (upsideDown) angle += Math.PI;
+
+        glyphs.push({
+            anchorPoint: newAnchorPoint,
+            offset: upsideDown ? Math.PI : <span class="number">0</span>,
+            minScale: scale,
+            maxScale: prevScale,
+            angle: (angle + <span class="number">2</span> * Math.PI) % (<span class="number">2</span> * Math.PI)
+        });
+
+        <span class="keyword">if</span> (scale &lt;= placementScale) <span class="keyword">break</span>;
+
+        newAnchorPoint = end;
+
+        <span class="comment">// skip duplicate nodes</span>
+        <span class="keyword">while</span> (newAnchorPoint.equals(end)) {
+            segment += forward ? <span class="number">1</span> : -<span class="number">1</span>;
+            end = line[segment];
+            <span class="keyword">if</span> (!end) {
+                <span class="keyword">return</span> scale;
+            }
+        }
+
+        <span class="keyword">var</span> unit = end.sub(newAnchorPoint)._unit();
+        newAnchorPoint = newAnchorPoint.sub(unit._mult(distance));
+
+        prevScale = scale;
+    }
+
+    <span class="keyword">return</span> placementScale;
+}
+</code></pre>

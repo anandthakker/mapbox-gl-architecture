@@ -1,0 +1,80 @@
+<h1>check_max_angle.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = checkMaxAngle;
+
+<span class="comment">/**
+ * Labels placed around really sharp angles aren't readable. Check if any
+ * part of the potential label has a combined angle that is too big.
+ *
+ * @param {Array&lt;Point>} line
+ * @param {Anchor} anchor The point on the line around which the label is anchored.
+ * @param {number} labelLength The length of the label in geometry units.
+ * @param {number} windowSize The check fails if the combined angles within a part of the line that is `windowSize` long is too big.
+ * @param {number} maxAngle The maximum combined angle that any window along the label is allowed to have.
+ *
+ * @returns {boolean} whether the label should be placed
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">checkMaxAngle</span><span class="params">(line, anchor, labelLength, windowSize, maxAngle)</span> {</span>
+
+    <span class="comment">// horizontal labels always pass</span>
+    <span class="keyword">if</span> (anchor.segment === <span class="literal">undefined</span>) <span class="keyword">return</span> <span class="literal">true</span>;
+
+    <span class="keyword">var</span> p = anchor;
+    <span class="keyword">var</span> index = anchor.segment + <span class="number">1</span>;
+    <span class="keyword">var</span> anchorDistance = <span class="number">0</span>;
+
+    <span class="comment">// move backwards along the line to the first segment the label appears on</span>
+    <span class="keyword">while</span> (anchorDistance > -labelLength / <span class="number">2</span>) {
+        index--;
+
+        <span class="comment">// there isn't enough room for the label after the beginning of the line</span>
+        <span class="keyword">if</span> (index &lt; <span class="number">0</span>) <span class="keyword">return</span> <span class="literal">false</span>;
+
+        anchorDistance -= line[index].dist(p);
+        p = line[index];
+    }
+
+    anchorDistance += line[index].dist(line[index + <span class="number">1</span>]);
+    index++;
+
+    <span class="comment">// store recent corners and their total angle difference</span>
+    <span class="keyword">var</span> recentCorners = [];
+    <span class="keyword">var</span> recentAngleDelta = <span class="number">0</span>;
+
+    <span class="comment">// move forwards by the length of the label and check angles along the way</span>
+    <span class="keyword">while</span> (anchorDistance &lt; labelLength / <span class="number">2</span>) {
+        <span class="keyword">var</span> prev = line[index - <span class="number">1</span>];
+        <span class="keyword">var</span> current = line[index];
+        <span class="keyword">var</span> next = line[index + <span class="number">1</span>];
+
+        <span class="comment">// there isn't enough room for the label before the end of the line</span>
+        <span class="keyword">if</span> (!next) <span class="keyword">return</span> <span class="literal">false</span>;
+
+        <span class="keyword">var</span> angleDelta = prev.angleTo(current) - current.angleTo(next);
+        <span class="comment">// restrict angle to -pi..pi range</span>
+        angleDelta = Math.abs(((angleDelta + <span class="number">3</span> * Math.PI) % (Math.PI * <span class="number">2</span>)) - Math.PI);
+
+        recentCorners.push({
+            distance: anchorDistance,
+            angleDelta: angleDelta
+        });
+        recentAngleDelta += angleDelta;
+
+        <span class="comment">// remove corners that are far enough away from the list of recent anchors</span>
+        <span class="keyword">while</span> (anchorDistance - recentCorners[<span class="number">0</span>].distance > windowSize) {
+            recentAngleDelta -= recentCorners.shift().angleDelta;
+        }
+
+        <span class="comment">// the sum of angles within the window area exceeds the maximum allowed value. check fails.</span>
+        <span class="keyword">if</span> (recentAngleDelta > maxAngle) <span class="keyword">return</span> <span class="literal">false</span>;
+
+        index++;
+        anchorDistance += current.dist(next);
+    }
+
+    <span class="comment">// no part of the line had an angle greater than the maximum allowed. check passes.</span>
+    <span class="keyword">return</span> <span class="literal">true</span>;
+}
+</code></pre>

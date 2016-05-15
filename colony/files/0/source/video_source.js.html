@@ -1,0 +1,191 @@
+<h1>video_source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> Tile = require(<span class="string">'./tile'</span>);
+<span class="keyword">var</span> TileCoord = require(<span class="string">'./tile_coord'</span>);
+<span class="keyword">var</span> LngLat = require(<span class="string">'../geo/lng_lat'</span>);
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+<span class="keyword">var</span> RasterBoundsArray = require(<span class="string">'../render/draw_raster'</span>).RasterBoundsArray;
+<span class="keyword">var</span> Buffer = require(<span class="string">'../data/buffer'</span>);
+<span class="keyword">var</span> VertexArrayObject = require(<span class="string">'../render/vertex_array_object'</span>);
+
+module.exports = VideoSource;
+
+<span class="comment">/**
+ * Create a Video data source instance given an options object
+ * @class VideoSource
+ * @param {Object} [options]
+ * @param {Array&lt;string>} options.urls An array of URLs to video files
+ * @param {Array} options.coordinates Four geographical [lng, lat] coordinates in clockwise order defining the corners (starting with top left) of the video. Does not have to be a rectangle.
+ * @example
+ * var sourceObj = new mapboxgl.VideoSource({
+ *    url: [
+ *        'https://www.mapbox.com/videos/baltimore-smoke.mp4',
+ *        'https://www.mapbox.com/videos/baltimore-smoke.webm'
+ *    ],
+ *    coordinates: [
+ *        [-76.54335737228394, 39.18579907229748],
+ *        [-76.52803659439087, 39.1838364847587],
+ *        [-76.5295386314392, 39.17683392507606],
+ *        [-76.54520273208618, 39.17876344106642]
+ *    ]
+ * });
+ * map.addSource('some id', sourceObj); // add
+ * map.removeSource('some id');  // remove
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">VideoSource</span><span class="params">(options)</span> {</span>
+    <span class="keyword">this</span>.urls = options.urls;
+    <span class="keyword">this</span>.coordinates = options.coordinates;
+
+    ajax.getVideo(options.urls, <span class="keyword">function</span>(err, video) {
+        <span class="comment">// @TODO handle errors via event.</span>
+        <span class="keyword">if</span> (err) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>.video = video;
+        <span class="keyword">this</span>.video.loop = <span class="literal">true</span>;
+
+        <span class="keyword">var</span> loopID;
+
+        <span class="comment">// start repainting when video starts playing</span>
+        <span class="keyword">this</span>.video.addEventListener(<span class="string">'playing'</span>, <span class="keyword">function</span>() {
+            loopID = <span class="keyword">this</span>.map.style.animationLoop.set(<span class="literal">Infinity</span>);
+            <span class="keyword">this</span>.map._rerender();
+        }.bind(<span class="keyword">this</span>));
+
+        <span class="comment">// stop repainting when video stops</span>
+        <span class="keyword">this</span>.video.addEventListener(<span class="string">'pause'</span>, <span class="keyword">function</span>() {
+            <span class="keyword">this</span>.map.style.animationLoop.cancel(loopID);
+        }.bind(<span class="keyword">this</span>));
+
+        <span class="keyword">this</span>._loaded = <span class="literal">true</span>;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.map) {
+            <span class="keyword">this</span>.video.play();
+            <span class="keyword">this</span>.setCoordinates(options.coordinates);
+        }
+    }.bind(<span class="keyword">this</span>));
+}
+
+VideoSource.prototype = util.inherit(Evented, <span class="comment">/** @lends VideoSource.prototype */</span>{
+    roundZoom: <span class="literal">true</span>,
+
+    <span class="comment">/**
+     * Return the HTML video element.
+     *
+     * @returns {Object}
+     */</span>
+    getVideo: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.video;
+    },
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>.map = map;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.video) {
+            <span class="keyword">this</span>.video.play();
+            <span class="keyword">this</span>.setCoordinates(<span class="keyword">this</span>.coordinates);
+        }
+    },
+
+    <span class="comment">/**
+     * Update video coordinates and rerender map
+     *
+     * @param {Array} coordinates Four geographical [lng, lat] coordinates in clockwise order defining the corners (starting with top left) of the video. Does not have to be a rectangle.
+     * @returns {VideoSource} this
+     */</span>
+    setCoordinates: <span class="keyword">function</span>(coordinates) {
+        <span class="keyword">this</span>.coordinates = coordinates;
+
+        <span class="comment">// Calculate which mercator tile is suitable for rendering the video in</span>
+        <span class="comment">// and create a buffer with the corner coordinates. These coordinates</span>
+        <span class="comment">// may be outside the tile, because raster tiles aren't clipped when rendering.</span>
+
+        <span class="keyword">var</span> map = <span class="keyword">this</span>.map;
+        <span class="keyword">var</span> cornerZ0Coords = coordinates.map(<span class="keyword">function</span>(coord) {
+            <span class="keyword">return</span> map.transform.locationCoordinate(LngLat.convert(coord)).zoomTo(<span class="number">0</span>);
+        });
+
+        <span class="keyword">var</span> centerCoord = <span class="keyword">this</span>.centerCoord = util.getCoordinatesCenter(cornerZ0Coords);
+        centerCoord.column = Math.round(centerCoord.column);
+        centerCoord.row = Math.round(centerCoord.row);
+
+
+        <span class="keyword">var</span> tileCoords = cornerZ0Coords.map(<span class="keyword">function</span>(coord) {
+            <span class="keyword">var</span> zoomedCoord = coord.zoomTo(centerCoord.zoom);
+            <span class="keyword">return</span> <span class="keyword">new</span> Point(
+                Math.round((zoomedCoord.column - centerCoord.column) * EXTENT),
+                Math.round((zoomedCoord.row - centerCoord.row) * EXTENT));
+        });
+
+        <span class="keyword">var</span> maxInt16 = <span class="number">32767</span>;
+        <span class="keyword">var</span> array = <span class="keyword">new</span> RasterBoundsArray();
+        array.emplaceBack(tileCoords[<span class="number">0</span>].x, tileCoords[<span class="number">0</span>].y, <span class="number">0</span>, <span class="number">0</span>);
+        array.emplaceBack(tileCoords[<span class="number">1</span>].x, tileCoords[<span class="number">1</span>].y, maxInt16, <span class="number">0</span>);
+        array.emplaceBack(tileCoords[<span class="number">3</span>].x, tileCoords[<span class="number">3</span>].y, <span class="number">0</span>, maxInt16);
+        array.emplaceBack(tileCoords[<span class="number">2</span>].x, tileCoords[<span class="number">2</span>].y, maxInt16, maxInt16);
+
+        <span class="keyword">this</span>.tile = <span class="keyword">new</span> Tile(<span class="keyword">new</span> TileCoord(centerCoord.zoom, centerCoord.column, centerCoord.row));
+        <span class="keyword">this</span>.tile.buckets = {};
+
+        <span class="keyword">this</span>.tile.boundsBuffer = <span class="keyword">new</span> Buffer(array.serialize(), RasterBoundsArray.serialize(), Buffer.BufferType.VERTEX);
+        <span class="keyword">this</span>.tile.boundsVAO = <span class="keyword">new</span> VertexArrayObject();
+
+        <span class="keyword">this</span>.fire(<span class="string">'change'</span>);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.video &amp;&amp; <span class="keyword">this</span>.video.readyState >= <span class="number">2</span>;
+    },
+
+    update: <span class="keyword">function</span>() {
+        <span class="comment">// noop</span>
+    },
+
+    reload: <span class="keyword">function</span>() {
+        <span class="comment">// noop</span>
+    },
+
+    prepare: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._loaded) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.video.readyState &lt; <span class="number">2</span>) <span class="keyword">return</span>; <span class="comment">// not enough data for current position</span>
+
+        <span class="keyword">var</span> gl = <span class="keyword">this</span>.map.painter.gl;
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.tile.texture) {
+            <span class="keyword">this</span>.tile.texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.tile.texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texImage2D(gl.TEXTURE_2D, <span class="number">0</span>, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.video);
+        } <span class="keyword">else</span> {
+            gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.tile.texture);
+            gl.texSubImage2D(gl.TEXTURE_2D, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, gl.RGBA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.video);
+        }
+
+        <span class="keyword">this</span>._currentTime = <span class="keyword">this</span>.video.currentTime;
+    },
+
+    getVisibleCoordinates: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.tile) <span class="keyword">return</span> [<span class="keyword">this</span>.tile.coord];
+        <span class="keyword">else</span> <span class="keyword">return</span> [];
+    },
+
+    getTile: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.tile;
+    },
+
+    serialize: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> {
+            type: <span class="string">'video'</span>,
+            urls: <span class="keyword">this</span>.urls,
+            coordinates: <span class="keyword">this</span>.coordinates
+        };
+    }
+});
+</code></pre>

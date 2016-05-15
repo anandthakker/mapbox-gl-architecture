@@ -1,0 +1,43 @@
+<h1>resolve_text.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> resolveTokens = require(<span class="string">'../util/token'</span>);
+
+module.exports = resolveText;
+
+<span class="comment">/**
+ * For an array of features determine what glyphs need to be loaded
+ * and apply any text preprocessing. The remaining users of text should
+ * use the `textFeatures` key returned by this function rather than accessing
+ * feature text directly.
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">resolveText</span><span class="params">(features, layoutProperties, codepoints)</span> {</span>
+    <span class="keyword">var</span> textFeatures = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>, fl = features.length; i &lt; fl; i++) {
+        <span class="keyword">var</span> text = resolveTokens(features[i].properties, layoutProperties[<span class="string">'text-field'</span>]);
+        <span class="keyword">if</span> (!text) {
+            textFeatures[i] = <span class="literal">null</span>;
+            <span class="keyword">continue</span>;
+        }
+        text = text.toString();
+
+        <span class="keyword">var</span> transform = layoutProperties[<span class="string">'text-transform'</span>];
+        <span class="keyword">if</span> (transform === <span class="string">'uppercase'</span>) {
+            text = text.toLocaleUpperCase();
+        } <span class="keyword">else</span> <span class="keyword">if</span> (transform === <span class="string">'lowercase'</span>) {
+            text = text.toLocaleLowerCase();
+        }
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; text.length; j++) {
+            codepoints[text.charCodeAt(j)] = <span class="literal">true</span>;
+        }
+
+        <span class="comment">// Track indexes of features with text.</span>
+        textFeatures[i] = text;
+    }
+
+    <span class="keyword">return</span> textFeatures;
+}
+</code></pre>

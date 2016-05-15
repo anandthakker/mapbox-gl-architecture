@@ -1,0 +1,179 @@
+<h1>tile_coord.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> assert = require(<span class="string">'assert'</span>);
+<span class="keyword">var</span> Coordinate = require(<span class="string">'../geo/coordinate'</span>);
+
+module.exports = TileCoord;
+
+<span class="function"><span class="keyword">function</span> <span class="title">TileCoord</span><span class="params">(z, x, y, w)</span> {</span>
+    assert(!isNaN(z) &amp;&amp; z >= <span class="number">0</span> &amp;&amp; z % <span class="number">1</span> === <span class="number">0</span>);
+    assert(!isNaN(x) &amp;&amp; x >= <span class="number">0</span> &amp;&amp; x % <span class="number">1</span> === <span class="number">0</span>);
+    assert(!isNaN(y) &amp;&amp; y >= <span class="number">0</span> &amp;&amp; y % <span class="number">1</span> === <span class="number">0</span>);
+
+    <span class="keyword">if</span> (isNaN(w)) w = <span class="number">0</span>;
+
+    <span class="keyword">this</span>.z = +z;
+    <span class="keyword">this</span>.x = +x;
+    <span class="keyword">this</span>.y = +y;
+    <span class="keyword">this</span>.w = +w;
+
+    <span class="comment">// calculate id</span>
+    w *= <span class="number">2</span>;
+    <span class="keyword">if</span> (w &lt; <span class="number">0</span>) w = w * -<span class="number">1</span> - <span class="number">1</span>;
+    <span class="keyword">var</span> dim = <span class="number">1</span> &lt;&lt; <span class="keyword">this</span>.z;
+    <span class="keyword">this</span>.id = ((dim * dim * w + dim * <span class="keyword">this</span>.y + <span class="keyword">this</span>.x) * <span class="number">32</span>) + <span class="keyword">this</span>.z;
+
+    <span class="comment">// for caching pos matrix calculation when rendering</span>
+    <span class="keyword">this</span>.posMatrix = <span class="literal">null</span>;
+}
+
+TileCoord.prototype.toString = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">this</span>.z + <span class="string">"/"</span> + <span class="keyword">this</span>.x + <span class="string">"/"</span> + <span class="keyword">this</span>.y;
+};
+
+TileCoord.prototype.toCoordinate = <span class="keyword">function</span>(sourceMaxZoom) {
+    <span class="keyword">var</span> zoom = Math.min(<span class="keyword">this</span>.z, sourceMaxZoom);
+    <span class="keyword">var</span> tileScale = Math.pow(<span class="number">2</span>, zoom);
+    <span class="keyword">var</span> row = <span class="keyword">this</span>.y;
+    <span class="keyword">var</span> column = <span class="keyword">this</span>.x + tileScale * <span class="keyword">this</span>.w;
+    <span class="keyword">return</span> <span class="keyword">new</span> Coordinate(column, row, zoom);
+};
+
+<span class="comment">// Parse a packed integer id into a TileCoord object</span>
+TileCoord.fromID = <span class="keyword">function</span>(id) {
+    <span class="keyword">var</span> z = id % <span class="number">32</span>, dim = <span class="number">1</span> &lt;&lt; z;
+    <span class="keyword">var</span> xy = ((id - z) / <span class="number">32</span>);
+    <span class="keyword">var</span> x = xy % dim, y = ((xy - x) / dim) % dim;
+    <span class="keyword">var</span> w = Math.floor(xy / (dim * dim));
+    <span class="keyword">if</span> (w % <span class="number">2</span> !== <span class="number">0</span>) w = w * -<span class="number">1</span> - <span class="number">1</span>;
+    w /= <span class="number">2</span>;
+    <span class="keyword">return</span> <span class="keyword">new</span> TileCoord(z, x, y, w);
+};
+
+<span class="comment">// given a list of urls, choose a url template and return a tile URL</span>
+TileCoord.prototype.url = <span class="keyword">function</span>(urls, sourceMaxZoom) {
+    <span class="keyword">return</span> urls[(<span class="keyword">this</span>.x + <span class="keyword">this</span>.y) % urls.length]
+        .replace(<span class="string">'{prefix}'</span>, (<span class="keyword">this</span>.x % <span class="number">16</span>).toString(<span class="number">16</span>) + (<span class="keyword">this</span>.y % <span class="number">16</span>).toString(<span class="number">16</span>))
+        .replace(<span class="string">'{z}'</span>, Math.min(<span class="keyword">this</span>.z, sourceMaxZoom || <span class="keyword">this</span>.z))
+        .replace(<span class="string">'{x}'</span>, <span class="keyword">this</span>.x)
+        .replace(<span class="string">'{y}'</span>, <span class="keyword">this</span>.y);
+};
+
+<span class="comment">// Return the coordinate of the parent tile</span>
+TileCoord.prototype.parent = <span class="keyword">function</span>(sourceMaxZoom) {
+    <span class="keyword">if</span> (<span class="keyword">this</span>.z === <span class="number">0</span>) <span class="keyword">return</span> <span class="literal">null</span>;
+
+    <span class="comment">// the id represents an overscaled tile, return the same coordinates with a lower z</span>
+    <span class="keyword">if</span> (<span class="keyword">this</span>.z > sourceMaxZoom) {
+        <span class="keyword">return</span> <span class="keyword">new</span> TileCoord(<span class="keyword">this</span>.z - <span class="number">1</span>, <span class="keyword">this</span>.x, <span class="keyword">this</span>.y, <span class="keyword">this</span>.w);
+    }
+
+    <span class="keyword">return</span> <span class="keyword">new</span> TileCoord(<span class="keyword">this</span>.z - <span class="number">1</span>, Math.floor(<span class="keyword">this</span>.x / <span class="number">2</span>), Math.floor(<span class="keyword">this</span>.y / <span class="number">2</span>), <span class="keyword">this</span>.w);
+};
+
+TileCoord.prototype.wrapped = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">new</span> TileCoord(<span class="keyword">this</span>.z, <span class="keyword">this</span>.x, <span class="keyword">this</span>.y, <span class="number">0</span>);
+};
+
+<span class="comment">// Return the coordinates of the tile's children</span>
+TileCoord.prototype.children = <span class="keyword">function</span>(sourceMaxZoom) {
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.z >= sourceMaxZoom) {
+        <span class="comment">// return a single tile coord representing a an overscaled tile</span>
+        <span class="keyword">return</span> [<span class="keyword">new</span> TileCoord(<span class="keyword">this</span>.z + <span class="number">1</span>, <span class="keyword">this</span>.x, <span class="keyword">this</span>.y, <span class="keyword">this</span>.w)];
+    }
+
+    <span class="keyword">var</span> z = <span class="keyword">this</span>.z + <span class="number">1</span>;
+    <span class="keyword">var</span> x = <span class="keyword">this</span>.x * <span class="number">2</span>;
+    <span class="keyword">var</span> y = <span class="keyword">this</span>.y * <span class="number">2</span>;
+    <span class="keyword">return</span> [
+        <span class="keyword">new</span> TileCoord(z, x, y, <span class="keyword">this</span>.w),
+        <span class="keyword">new</span> TileCoord(z, x + <span class="number">1</span>, y, <span class="keyword">this</span>.w),
+        <span class="keyword">new</span> TileCoord(z, x, y + <span class="number">1</span>, <span class="keyword">this</span>.w),
+        <span class="keyword">new</span> TileCoord(z, x + <span class="number">1</span>, y + <span class="number">1</span>, <span class="keyword">this</span>.w)
+    ];
+};
+
+<span class="comment">// Taken from polymaps src/Layer.js</span>
+<span class="comment">// https://github.com/simplegeo/polymaps/blob/master/src/Layer.js#L333-L383</span>
+
+<span class="function"><span class="keyword">function</span> <span class="title">edge</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">if</span> (a.row > b.row) { <span class="keyword">var</span> t = a; a = b; b = t; }
+    <span class="keyword">return</span> {
+        x0: a.column,
+        y0: a.row,
+        x1: b.column,
+        y1: b.row,
+        dx: b.column - a.column,
+        dy: b.row - a.row
+    };
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">scanSpans</span><span class="params">(e0, e1, ymin, ymax, scanLine)</span> {</span>
+    <span class="keyword">var</span> y0 = Math.max(ymin, Math.floor(e1.y0));
+    <span class="keyword">var</span> y1 = Math.min(ymax, Math.ceil(e1.y1));
+
+    <span class="comment">// sort edges by x-coordinate</span>
+    <span class="keyword">if</span> ((e0.x0 === e1.x0 &amp;&amp; e0.y0 === e1.y0) ?
+            (e0.x0 + e1.dy / e0.dy * e0.dx &lt; e1.x1) :
+            (e0.x1 - e1.dy / e0.dy * e0.dx &lt; e1.x0)) {
+        <span class="keyword">var</span> t = e0; e0 = e1; e1 = t;
+    }
+
+    <span class="comment">// scan lines!</span>
+    <span class="keyword">var</span> m0 = e0.dx / e0.dy;
+    <span class="keyword">var</span> m1 = e1.dx / e1.dy;
+    <span class="keyword">var</span> d0 = e0.dx > <span class="number">0</span>; <span class="comment">// use y + 1 to compute x0</span>
+    <span class="keyword">var</span> d1 = e1.dx &lt; <span class="number">0</span>; <span class="comment">// use y + 1 to compute x1</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> y = y0; y &lt; y1; y++) {
+        <span class="keyword">var</span> x0 = m0 * Math.max(<span class="number">0</span>, Math.min(e0.dy, y + d0 - e0.y0)) + e0.x0;
+        <span class="keyword">var</span> x1 = m1 * Math.max(<span class="number">0</span>, Math.min(e1.dy, y + d1 - e1.y0)) + e1.x0;
+        scanLine(Math.floor(x1), Math.ceil(x0), y);
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">scanTriangle</span><span class="params">(a, b, c, ymin, ymax, scanLine)</span> {</span>
+    <span class="keyword">var</span> ab = edge(a, b),
+        bc = edge(b, c),
+        ca = edge(c, a);
+
+    <span class="keyword">var</span> t;
+
+    <span class="comment">// sort edges by y-length</span>
+    <span class="keyword">if</span> (ab.dy > bc.dy) { t = ab; ab = bc; bc = t; }
+    <span class="keyword">if</span> (ab.dy > ca.dy) { t = ab; ab = ca; ca = t; }
+    <span class="keyword">if</span> (bc.dy > ca.dy) { t = bc; bc = ca; ca = t; }
+
+    <span class="comment">// scan span! scan span!</span>
+    <span class="keyword">if</span> (ab.dy) scanSpans(ca, ab, ymin, ymax, scanLine);
+    <span class="keyword">if</span> (bc.dy) scanSpans(ca, bc, ymin, ymax, scanLine);
+}
+
+TileCoord.cover = <span class="keyword">function</span>(z, bounds, actualZ) {
+    <span class="keyword">var</span> tiles = <span class="number">1</span> &lt;&lt; z;
+    <span class="keyword">var</span> t = {};
+
+    <span class="function"><span class="keyword">function</span> <span class="title">scanLine</span><span class="params">(x0, x1, y)</span> {</span>
+        <span class="keyword">var</span> x, wx, coord;
+        <span class="keyword">if</span> (y >= <span class="number">0</span> &amp;&amp; y &lt;= tiles) {
+            <span class="keyword">for</span> (x = x0; x &lt; x1; x++) {
+                wx = (x % tiles + tiles) % tiles;
+                coord = <span class="keyword">new</span> TileCoord(actualZ, wx, y, Math.floor(x / tiles));
+                t[coord.id] = coord;
+            }
+        }
+    }
+
+    <span class="comment">// Divide the screen up in two triangles and scan each of them:</span>
+    <span class="comment">// +---/</span>
+    <span class="comment">// | / |</span>
+    <span class="comment">// /---+</span>
+    scanTriangle(bounds[<span class="number">0</span>], bounds[<span class="number">1</span>], bounds[<span class="number">2</span>], <span class="number">0</span>, tiles, scanLine);
+    scanTriangle(bounds[<span class="number">2</span>], bounds[<span class="number">3</span>], bounds[<span class="number">0</span>], <span class="number">0</span>, tiles, scanLine);
+
+    <span class="keyword">return</span> Object.keys(t).map(<span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> t[id];
+    });
+};
+</code></pre>

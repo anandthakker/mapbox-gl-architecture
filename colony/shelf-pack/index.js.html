@@ -1,0 +1,243 @@
+<h1>shelf-pack</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = ShelfPack;
+
+
+<span class="comment">/**
+ * Create a new ShelfPack bin allocator.
+ *
+ * Uses the Shelf Best Height Fit algorithm from
+ * http://clb.demon.fi/files/RectangleBinPack.pdf
+ *
+ * @class  ShelfPack
+ * @param  {number}  [w=64]  Initial width of the sprite
+ * @param  {number}  [h=64]  Initial width of the sprite
+ * @param  {Object}  [options]
+ * @param  {boolean} [options.autoResize=false]  If `true`, the sprite will automatically grow
+ * @example
+ * var sprite = new ShelfPack(64, 64, { autoResize: false });
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">ShelfPack</span><span class="params">(w, h, options)</span> {</span>
+    options = options || {};
+    <span class="keyword">this</span>.w = w || <span class="number">64</span>;
+    <span class="keyword">this</span>.h = h || <span class="number">64</span>;
+    <span class="keyword">this</span>.autoResize = !!options.autoResize;
+    <span class="keyword">this</span>.shelves = [];
+    <span class="keyword">this</span>.stats = {};
+    <span class="keyword">this</span>.count = <span class="keyword">function</span>(h) {
+        <span class="keyword">this</span>.stats[h] = (<span class="keyword">this</span>.stats[h] | <span class="number">0</span>) + <span class="number">1</span>;
+    };
+}
+
+<span class="comment">/**
+ * Batch pack multiple bins into the sprite.
+ *
+ * @param   {Array}   bins Array of requested bins - each object should have `width`, `height` (or `w`, `h`) properties
+ * @param   {Object}  [options]
+ * @param   {boolean} [options.inPlace=false] If `true`, the supplied bin objects will be updated inplace with `x` and `y` properties
+ * @returns {Array}   Array of allocated bins - each bin is an object with `x`, `y`, `w`, `h` properties
+ * @example
+ * var bins = [
+ *     { id: 'a', width: 12, height: 12 },
+ *     { id: 'b', width: 12, height: 16 },
+ *     { id: 'c', width: 12, height: 24 }
+ * ];
+ * var results = sprite.pack(bins, { inPlace: false });
+ */</span>
+ShelfPack.prototype.pack = <span class="keyword">function</span>(bins, options) {
+    bins = [].concat(bins);
+    options = options || {};
+
+    <span class="keyword">var</span> results = [],
+        w, h, allocation;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; bins.length; i++) {
+        w = bins[i].w || bins[i].width;
+        h = bins[i].h || bins[i].height;
+        <span class="keyword">if</span> (w &amp;&amp; h) {
+            allocation = <span class="keyword">this</span>.packOne(w, h);
+            <span class="keyword">if</span> (!allocation) {
+                <span class="keyword">continue</span>;
+            }
+            <span class="keyword">if</span> (options.inPlace) {
+                bins[i].x = allocation.x;
+                bins[i].y = allocation.y;
+            }
+            results.push(allocation);
+        }
+    }
+
+    <span class="keyword">return</span> results;
+};
+
+<span class="comment">/**
+ * Pack a single bin into the sprite.
+ *
+ * @param   {number}  w   Width of the bin to allocate
+ * @param   {number}  h   Height of the bin to allocate
+ * @returns {Object}  Allocated bin object with `x`, `y`, `w`, `h` properties, or `null` if allocation failed
+ * @example
+ * var results = sprite.packOne(12, 16);
+ */</span>
+ShelfPack.prototype.packOne = <span class="keyword">function</span>(w, h) {
+    <span class="keyword">var</span> y = <span class="number">0</span>,
+        best = { shelf: -<span class="number">1</span>, waste: <span class="literal">Infinity</span> },
+        shelf, waste;
+
+    <span class="comment">// find the best shelf</span>
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.shelves.length; i++) {
+        shelf = <span class="keyword">this</span>.shelves[i];
+        y += shelf.h;
+
+        <span class="comment">// exactly the right height with width to spare, pack it..</span>
+        <span class="keyword">if</span> (h === shelf.h &amp;&amp; w &lt;= shelf.free) {
+            <span class="keyword">this</span>.count(h);
+            <span class="keyword">return</span> shelf.alloc(w, h);
+        }
+        <span class="comment">// not enough height or width, skip it..</span>
+        <span class="keyword">if</span> (h > shelf.h || w > shelf.free) {
+            <span class="keyword">continue</span>;
+        }
+        <span class="comment">// maybe enough height or width, minimize waste..</span>
+        <span class="keyword">if</span> (h &lt; shelf.h &amp;&amp; w &lt;= shelf.free) {
+            waste = shelf.h - h;
+            <span class="keyword">if</span> (waste &lt; best.waste) {
+                best.waste = waste;
+                best.shelf = i;
+            }
+        }
+    }
+
+    <span class="keyword">if</span> (best.shelf !== -<span class="number">1</span>) {
+        shelf = <span class="keyword">this</span>.shelves[best.shelf];
+        <span class="keyword">this</span>.count(h);
+        <span class="keyword">return</span> shelf.alloc(w, h);
+    }
+
+    <span class="comment">// add shelf..</span>
+    <span class="keyword">if</span> (h &lt;= (<span class="keyword">this</span>.h - y) &amp;&amp; w &lt;= <span class="keyword">this</span>.w) {
+        shelf = <span class="keyword">new</span> Shelf(y, <span class="keyword">this</span>.w, h);
+        <span class="keyword">this</span>.shelves.push(shelf);
+        <span class="keyword">this</span>.count(h);
+        <span class="keyword">return</span> shelf.alloc(w, h);
+    }
+
+    <span class="comment">// no more space..</span>
+    <span class="comment">// If `autoResize` option is set, grow the sprite as follows:</span>
+    <span class="comment">//  * double whichever sprite dimension is smaller (`w1` or `h1`)</span>
+    <span class="comment">//  * if sprite dimensions are equal, grow width before height</span>
+    <span class="comment">//  * accomodate very large bin requests (big `w` or `h`)</span>
+    <span class="keyword">if</span> (<span class="keyword">this</span>.autoResize) {
+        <span class="keyword">var</span> h1, h2, w1, w2;
+
+        h1 = h2 = <span class="keyword">this</span>.h;
+        w1 = w2 = <span class="keyword">this</span>.w;
+
+        <span class="keyword">if</span> (w1 &lt;= h1 || w > w1) {   <span class="comment">// grow width..</span>
+            w2 = Math.max(w, w1) * <span class="number">2</span>;
+        }
+        <span class="keyword">if</span> (h1 &lt; w1 || h > h1) {    <span class="comment">// grow height..</span>
+            h2 = Math.max(h, h1) * <span class="number">2</span>;
+        }
+
+        <span class="keyword">this</span>.resize(w2, h2);
+        <span class="keyword">return</span> <span class="keyword">this</span>.packOne(w, h);  <span class="comment">// retry</span>
+    }
+
+    <span class="keyword">return</span> <span class="literal">null</span>;
+};
+
+<span class="comment">/**
+ * Clear the sprite.
+ *
+ * @example
+ * sprite.clear();
+ */</span>
+ShelfPack.prototype.clear = <span class="keyword">function</span>() {
+    <span class="keyword">this</span>.shelves = [];
+    <span class="keyword">this</span>.stats = {};
+};
+
+<span class="comment">/**
+ * Resize the sprite.
+ * The resize will fail if the requested dimensions are smaller than the current sprite dimensions.
+ *
+ * @param   {number}  w  Requested new sprite width
+ * @param   {number}  h  Requested new sprite height
+ * @returns {boolean} `true` if resize succeeded, `false` if failed
+ * @example
+ * sprite.resize(256, 256);
+ */</span>
+ShelfPack.prototype.resize = <span class="keyword">function</span>(w, h) {
+    <span class="keyword">if</span> (w &lt; <span class="keyword">this</span>.w || h &lt; <span class="keyword">this</span>.h) {
+        <span class="keyword">return</span> <span class="literal">false</span>;
+    }
+
+    <span class="keyword">this</span>.w = w;
+    <span class="keyword">this</span>.h = h;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.shelves.length; i++) {
+        <span class="keyword">this</span>.shelves[i].resize(w);
+    }
+    <span class="keyword">return</span> <span class="literal">true</span>;
+};
+
+
+
+<span class="comment">/**
+ * Create a new Shelf.
+ *
+ * @private
+ * @class  Shelf
+ * @param  {number}  y   Top coordinate of the new shelf
+ * @param  {number}  w   Width of the new shelf
+ * @param  {number}  h   Height of the new shelf
+ * @example
+ * var shelf = new Shelf(64, 512, 24);
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Shelf</span><span class="params">(y, w, h)</span> {</span>
+    <span class="keyword">this</span>.x = <span class="number">0</span>;
+    <span class="keyword">this</span>.y = y;
+    <span class="keyword">this</span>.w = <span class="keyword">this</span>.free = w;
+    <span class="keyword">this</span>.h = h;
+}
+
+<span class="comment">/**
+ * Allocate a single bin into the shelf.
+ *
+ * @private
+ * @param   {number}  w   Width of the bin to allocate
+ * @param   {number}  h   Height of the bin to allocate
+ * @returns {Object}  Allocated bin object with `x`, `y`, `w`, `h` properties, or `null` if allocation failed
+ * @example
+ * shelf.alloc(12, 16);
+ */</span>
+Shelf.prototype.alloc = <span class="keyword">function</span>(w, h) {
+    <span class="keyword">if</span> (w > <span class="keyword">this</span>.free || h > <span class="keyword">this</span>.h) {
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+    <span class="keyword">var</span> x = <span class="keyword">this</span>.x;
+    <span class="keyword">this</span>.x += w;
+    <span class="keyword">this</span>.free -= w;
+    <span class="keyword">return</span> { x: x, y: <span class="keyword">this</span>.y, w: w, h: h, width: w, height: h };
+};
+
+<span class="comment">/**
+ * Resize the shelf.
+ * The resize will fail if the requested width is smaller than the current shelf width.
+ *
+ * @private
+ * @param   {number}  w  Requested new width of the shelf
+ * @returns {boolean} true if resize succeeded, false if failed
+ * @example
+ * shelf.resize(512);
+ */</span>
+Shelf.prototype.resize = <span class="keyword">function</span>(w) {
+    <span class="keyword">if</span> (w &lt; <span class="keyword">this</span>.w) {
+        <span class="keyword">return</span> <span class="literal">false</span>;
+    }
+    <span class="keyword">this</span>.free += (w - <span class="keyword">this</span>.w);
+    <span class="keyword">this</span>.w = w;
+    <span class="keyword">return</span> <span class="literal">true</span>;
+};
+</code></pre>

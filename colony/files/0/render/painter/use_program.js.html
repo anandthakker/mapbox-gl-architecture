@@ -1,0 +1,140 @@
+<h1>use_program.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> fs = require(<span class="string">'fs'</span>);
+<span class="keyword">var</span> path = require(<span class="string">'path'</span>);
+<span class="keyword">var</span> assert = require(<span class="string">'assert'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+
+<span class="comment">// readFileSync calls must be written out long-form for brfs.</span>
+<span class="keyword">var</span> definitions = {
+    debug: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/debug.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/debug.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    fill: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/fill.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/fill.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    circle: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/circle.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/circle.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    line: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/line.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/line.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    linepattern: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/linepattern.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/linepattern.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    linesdfpattern: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/linesdfpattern.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/linesdfpattern.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    outline: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/outline.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/outline.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    outlinepattern: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/outlinepattern.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/outlinepattern.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    pattern: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/pattern.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/pattern.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    raster: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/raster.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/raster.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    icon: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/icon.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/icon.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    sdf: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/sdf.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/sdf.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    },
+    collisionbox: {
+        fragmentSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/collisionbox.fragment.glsl'</span>), <span class="string">'utf8'</span>),
+        vertexSource: fs.readFileSync(path.join(__dirname, <span class="string">'../../../shaders/collisionbox.vertex.glsl'</span>), <span class="string">'utf8'</span>)
+    }
+};
+
+module.exports._createProgram = <span class="keyword">function</span>(name, macros) {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    <span class="keyword">var</span> program = gl.createProgram();
+    <span class="keyword">var</span> definition = definitions[name];
+
+    <span class="keyword">var</span> defines = <span class="string">''</span>;
+    <span class="keyword">if</span> (macros) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> m = <span class="number">0</span>; m &lt; macros.length; m++) {
+            defines += <span class="string">'#define '</span> + macros[m] + <span class="string">'\n'</span>;
+        }
+    }
+
+    <span class="keyword">var</span> fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragmentShader, defines + definition.fragmentSource);
+    gl.compileShader(fragmentShader);
+    assert(gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS), gl.getShaderInfoLog(fragmentShader));
+    gl.attachShader(program, fragmentShader);
+
+    <span class="keyword">var</span> vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertexShader, defines + definition.vertexSource);
+    gl.compileShader(vertexShader);
+    assert(gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS), gl.getShaderInfoLog(vertexShader));
+    gl.attachShader(program, vertexShader);
+
+    gl.linkProgram(program);
+    assert(gl.getProgramParameter(program, gl.LINK_STATUS), gl.getProgramInfoLog(program));
+
+    <span class="keyword">var</span> attributes = {};
+    <span class="keyword">var</span> numAttributes = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; numAttributes; i++) {
+        <span class="keyword">var</span> attribute = gl.getActiveAttrib(program, i);
+        attributes[attribute.name] = i;
+    }
+
+    <span class="keyword">var</span> uniforms = {};
+    <span class="keyword">var</span> numUniforms = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+    <span class="keyword">for</span> (<span class="keyword">var</span> ui = <span class="number">0</span>; ui &lt; numUniforms; ui++) {
+        <span class="keyword">var</span> uniform = gl.getActiveUniform(program, ui);
+        uniforms[uniform.name] = gl.getUniformLocation(program, uniform.name);
+    }
+
+    <span class="keyword">return</span> util.extend({
+        program: program,
+        definition: definition,
+        attributes: attributes,
+        numAttributes: numAttributes
+    }, attributes, uniforms);
+};
+
+module.exports._createProgramCached = <span class="keyword">function</span>(name, macros) {
+    <span class="keyword">this</span>.cache = <span class="keyword">this</span>.cache || {};
+    <span class="keyword">if</span> (<span class="keyword">this</span>._showOverdrawInspector) {
+        macros = macros || [];
+        macros.push(<span class="string">'OVERDRAW_INSPECTOR'</span>);
+    }
+    <span class="keyword">var</span> key = JSON.stringify({name: name, macros: macros});
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.cache[key]) {
+        <span class="keyword">this</span>.cache[key] = <span class="keyword">this</span>._createProgram(name, macros);
+    }
+    <span class="keyword">return</span> <span class="keyword">this</span>.cache[key];
+};
+
+module.exports.useProgram = <span class="function"><span class="keyword">function</span> <span class="params">(nextProgramName, macros)</span> {</span>
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+
+    <span class="keyword">var</span> nextProgram = <span class="keyword">this</span>._createProgramCached(nextProgramName, macros);
+    <span class="keyword">var</span> previousProgram = <span class="keyword">this</span>.currentProgram;
+
+    <span class="keyword">if</span> (previousProgram !== nextProgram) {
+        gl.useProgram(nextProgram.program);
+        <span class="keyword">this</span>.currentProgram = nextProgram;
+    }
+
+    <span class="keyword">return</span> nextProgram;
+};
+</code></pre>

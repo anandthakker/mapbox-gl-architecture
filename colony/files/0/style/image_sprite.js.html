@@ -1,0 +1,81 @@
+<h1>image_sprite.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeSpriteURL;
+
+module.exports = ImageSprite;
+
+<span class="function"><span class="keyword">function</span> <span class="title">ImageSprite</span><span class="params">(base)</span> {</span>
+    <span class="keyword">this</span>.base = base;
+    <span class="keyword">this</span>.retina = browser.devicePixelRatio > <span class="number">1</span>;
+
+    <span class="keyword">var</span> format = <span class="keyword">this</span>.retina ? <span class="string">'@2x'</span> : <span class="string">''</span>;
+
+    ajax.getJSON(normalizeURL(base, format, <span class="string">'.json'</span>), <span class="keyword">function</span>(err, data) {
+        <span class="keyword">if</span> (err) {
+            <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {error: err});
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">this</span>.data = data;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.img) <span class="keyword">this</span>.fire(<span class="string">'load'</span>);
+    }.bind(<span class="keyword">this</span>));
+
+    ajax.getImage(normalizeURL(base, format, <span class="string">'.png'</span>), <span class="keyword">function</span>(err, img) {
+        <span class="keyword">if</span> (err) {
+            <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {error: err});
+            <span class="keyword">return</span>;
+        }
+
+        <span class="comment">// premultiply the sprite</span>
+        <span class="keyword">var</span> data = img.getData();
+        <span class="keyword">var</span> newdata = img.data = <span class="keyword">new</span> Uint8Array(data.length);
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; data.length; i += <span class="number">4</span>) {
+            <span class="keyword">var</span> alpha = data[i + <span class="number">3</span>] / <span class="number">255</span>;
+            newdata[i + <span class="number">0</span>] = data[i + <span class="number">0</span>] * alpha;
+            newdata[i + <span class="number">1</span>] = data[i + <span class="number">1</span>] * alpha;
+            newdata[i + <span class="number">2</span>] = data[i + <span class="number">2</span>] * alpha;
+            newdata[i + <span class="number">3</span>] = data[i + <span class="number">3</span>];
+        }
+
+        <span class="keyword">this</span>.img = img;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.data) <span class="keyword">this</span>.fire(<span class="string">'load'</span>);
+    }.bind(<span class="keyword">this</span>));
+}
+
+ImageSprite.prototype = Object.create(Evented);
+
+ImageSprite.prototype.toJSON = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">this</span>.base;
+};
+
+ImageSprite.prototype.loaded = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> !!(<span class="keyword">this</span>.data &amp;&amp; <span class="keyword">this</span>.img);
+};
+
+ImageSprite.prototype.resize = <span class="keyword">function</span>(<span class="comment">/*gl*/</span>) {
+    <span class="keyword">if</span> (browser.devicePixelRatio > <span class="number">1</span> !== <span class="keyword">this</span>.retina) {
+        <span class="keyword">var</span> newSprite = <span class="keyword">new</span> ImageSprite(<span class="keyword">this</span>.base);
+        newSprite.on(<span class="string">'load'</span>, <span class="keyword">function</span>() {
+            <span class="keyword">this</span>.img = newSprite.img;
+            <span class="keyword">this</span>.data = newSprite.data;
+            <span class="keyword">this</span>.retina = newSprite.retina;
+        }.bind(<span class="keyword">this</span>));
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">SpritePosition</span><span class="params">()</span> {</span>}
+SpritePosition.prototype = { x: <span class="number">0</span>, y: <span class="number">0</span>, width: <span class="number">0</span>, height: <span class="number">0</span>, pixelRatio: <span class="number">1</span>, sdf: <span class="literal">false</span> };
+
+ImageSprite.prototype.getSpritePosition = <span class="keyword">function</span>(name) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.loaded()) <span class="keyword">return</span> <span class="keyword">new</span> SpritePosition();
+
+    <span class="keyword">var</span> pos = <span class="keyword">this</span>.data &amp;&amp; <span class="keyword">this</span>.data[name];
+    <span class="keyword">if</span> (pos &amp;&amp; <span class="keyword">this</span>.img) <span class="keyword">return</span> pos;
+
+    <span class="keyword">return</span> <span class="keyword">new</span> SpritePosition();
+};
+</code></pre>

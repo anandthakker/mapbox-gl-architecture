@@ -1,0 +1,465 @@
+<h1>tile_pyramid.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Tile = require(<span class="string">'./tile'</span>);
+<span class="keyword">var</span> TileCoord = require(<span class="string">'./tile_coord'</span>);
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> Cache = require(<span class="string">'../util/lru_cache'</span>);
+<span class="keyword">var</span> Coordinate = require(<span class="string">'../geo/coordinate'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+
+module.exports = TilePyramid;
+
+<span class="comment">/**
+ * A tile pyramid is a specialized cache and datastructure
+ * that contains tiles. It's used by sources to manage their
+ * data.
+ *
+ * @param {Object} options
+ * @param {number} options.tileSize
+ * @param {number} options.minzoom
+ * @param {number} options.maxzoom
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">TilePyramid</span><span class="params">(options)</span> {</span>
+    <span class="keyword">this</span>.tileSize = options.tileSize;
+    <span class="keyword">this</span>.minzoom = options.minzoom;
+    <span class="keyword">this</span>.maxzoom = options.maxzoom;
+    <span class="keyword">this</span>.roundZoom = options.roundZoom;
+    <span class="keyword">this</span>.reparseOverscaled = options.reparseOverscaled;
+
+    <span class="keyword">this</span>._load = options.load;
+    <span class="keyword">this</span>._abort = options.abort;
+    <span class="keyword">this</span>._unload = options.unload;
+    <span class="keyword">this</span>._add = options.add;
+    <span class="keyword">this</span>._remove = options.remove;
+    <span class="keyword">this</span>._redoPlacement = options.redoPlacement;
+
+    <span class="keyword">this</span>._tiles = {};
+    <span class="keyword">this</span>._cache = <span class="keyword">new</span> Cache(<span class="number">0</span>, <span class="keyword">function</span>(tile) { <span class="keyword">return</span> <span class="keyword">this</span>._unload(tile); }.bind(<span class="keyword">this</span>));
+
+    <span class="keyword">this</span>._filterRendered = <span class="keyword">this</span>._filterRendered.bind(<span class="keyword">this</span>);
+}
+
+
+TilePyramid.maxOverzooming = <span class="number">10</span>;
+TilePyramid.maxUnderzooming = <span class="number">3</span>;
+
+TilePyramid.prototype = {
+    <span class="comment">/**
+     * Confirm that every tracked tile is loaded.
+     * @returns {boolean} whether all tiles are loaded.
+     * @private
+     */</span>
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">for</span> (<span class="keyword">var</span> t <span class="keyword">in</span> <span class="keyword">this</span>._tiles) {
+            <span class="keyword">if</span> (!<span class="keyword">this</span>._tiles[t].loaded &amp;&amp; !<span class="keyword">this</span>._tiles[t].errored)
+                <span class="keyword">return</span> <span class="literal">false</span>;
+        }
+        <span class="keyword">return</span> <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Return all tile ids ordered with z-order, and cast to numbers
+     * @returns {Array&lt;number>} ids
+     * @private
+     */</span>
+    orderedIDs: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> Object.keys(<span class="keyword">this</span>._tiles).map(Number).sort(compareKeyZoom);
+    },
+
+    renderedIDs: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>.orderedIDs().filter(<span class="keyword">this</span>._filterRendered);
+    },
+
+    _filterRendered: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>._tiles[id].loaded &amp;&amp; !<span class="keyword">this</span>._coveredTiles[id];
+    },
+
+    reload: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._cache.reset();
+        <span class="keyword">for</span> (<span class="keyword">var</span> i <span class="keyword">in</span> <span class="keyword">this</span>._tiles) {
+            <span class="keyword">this</span>._load(<span class="keyword">this</span>._tiles[i]);
+        }
+    },
+
+    <span class="comment">/**
+     * Get a specific tile by id
+     * @param {string|number} id tile id
+     * @returns {Object} tile
+     * @private
+     */</span>
+    getTile: <span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> <span class="keyword">this</span>._tiles[id];
+    },
+
+    <span class="comment">/**
+     * get the zoom level adjusted for the difference in map and source tilesizes
+     * @param {Object} transform
+     * @returns {number} zoom level
+     * @private
+     */</span>
+    getZoom: <span class="keyword">function</span>(transform) {
+        <span class="keyword">return</span> transform.zoom + Math.log(transform.tileSize / <span class="keyword">this</span>.tileSize) / Math.LN2;
+    },
+
+    <span class="comment">/**
+     * Return a zoom level that will cover all tiles in a given transform
+     * @param {Object} transform
+     * @returns {number} zoom level
+     * @private
+     */</span>
+    coveringZoomLevel: <span class="keyword">function</span>(transform) {
+        <span class="keyword">return</span> (<span class="keyword">this</span>.roundZoom ? Math.round : Math.floor)(<span class="keyword">this</span>.getZoom(transform));
+    },
+
+    <span class="comment">/**
+     * Given a transform, return all coordinates that could cover that
+     * transform for a covering zoom level.
+     * @param {Object} transform
+     * @returns {Array&lt;Tile>} tiles
+     * @private
+     */</span>
+    coveringTiles: <span class="keyword">function</span>(transform) {
+        <span class="keyword">var</span> z = <span class="keyword">this</span>.coveringZoomLevel(transform);
+        <span class="keyword">var</span> actualZ = z;
+
+        <span class="keyword">if</span> (z &lt; <span class="keyword">this</span>.minzoom) <span class="keyword">return</span> [];
+        <span class="keyword">if</span> (z > <span class="keyword">this</span>.maxzoom) z = <span class="keyword">this</span>.maxzoom;
+
+        <span class="keyword">var</span> tr = transform,
+            tileCenter = tr.locationCoordinate(tr.center)._zoomTo(z),
+            centerPoint = <span class="keyword">new</span> Point(tileCenter.column - <span class="number">0.5</span>, tileCenter.row - <span class="number">0.5</span>);
+
+        <span class="keyword">return</span> TileCoord.cover(z, [
+            tr.pointCoordinate(<span class="keyword">new</span> Point(<span class="number">0</span>, <span class="number">0</span>))._zoomTo(z),
+            tr.pointCoordinate(<span class="keyword">new</span> Point(tr.width, <span class="number">0</span>))._zoomTo(z),
+            tr.pointCoordinate(<span class="keyword">new</span> Point(tr.width, tr.height))._zoomTo(z),
+            tr.pointCoordinate(<span class="keyword">new</span> Point(<span class="number">0</span>, tr.height))._zoomTo(z)
+        ], <span class="keyword">this</span>.reparseOverscaled ? actualZ : z).sort(<span class="keyword">function</span>(a, b) {
+            <span class="keyword">return</span> centerPoint.dist(a) - centerPoint.dist(b);
+        });
+    },
+
+    <span class="comment">/**
+     * Recursively find children of the given tile (up to maxCoveringZoom) that are already loaded;
+     * adds found tiles to retain object; returns true if any child is found.
+     *
+     * @param {Coordinate} coord
+     * @param {number} maxCoveringZoom
+     * @param {boolean} retain
+     * @returns {boolean} whether the operation was complete
+     * @private
+     */</span>
+    findLoadedChildren: <span class="keyword">function</span>(coord, maxCoveringZoom, retain) {
+        <span class="keyword">var</span> found = <span class="literal">false</span>;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>._tiles) {
+            <span class="keyword">var</span> tile = <span class="keyword">this</span>._tiles[id];
+
+            <span class="comment">// only consider loaded tiles on higher zoom levels (up to maxCoveringZoom)</span>
+            <span class="keyword">if</span> (retain[id] || !tile.loaded || tile.coord.z &lt;= coord.z || tile.coord.z > maxCoveringZoom) <span class="keyword">continue</span>;
+
+            <span class="comment">// disregard tiles that are not descendants of the given tile coordinate</span>
+            <span class="keyword">var</span> z2 = Math.pow(<span class="number">2</span>, Math.min(tile.coord.z, <span class="keyword">this</span>.maxzoom) - Math.min(coord.z, <span class="keyword">this</span>.maxzoom));
+            <span class="keyword">if</span> (Math.floor(tile.coord.x / z2) !== coord.x ||
+                Math.floor(tile.coord.y / z2) !== coord.y)
+                <span class="keyword">continue</span>;
+
+            <span class="comment">// found loaded child</span>
+            retain[id] = <span class="literal">true</span>;
+            found = <span class="literal">true</span>;
+
+            <span class="comment">// loop through parents; retain the topmost loaded one if found</span>
+            <span class="keyword">while</span> (tile &amp;&amp; tile.coord.z - <span class="number">1</span> > coord.z) {
+                <span class="keyword">var</span> parentId = tile.coord.parent(<span class="keyword">this</span>.maxzoom).id;
+                tile = <span class="keyword">this</span>._tiles[parentId];
+
+                <span class="keyword">if</span> (tile &amp;&amp; tile.loaded) {
+                    <span class="keyword">delete</span> retain[id];
+                    retain[parentId] = <span class="literal">true</span>;
+                }
+            }
+        }
+        <span class="keyword">return</span> found;
+    },
+
+    <span class="comment">/**
+     * Find a loaded parent of the given tile (up to minCoveringZoom);
+     * adds the found tile to retain object and returns the tile if found
+     *
+     * @param {Coordinate} coord
+     * @param {number} minCoveringZoom
+     * @param {boolean} retain
+     * @returns {Tile} tile object
+     * @private
+     */</span>
+    findLoadedParent: <span class="keyword">function</span>(coord, minCoveringZoom, retain) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> z = coord.z - <span class="number">1</span>; z >= minCoveringZoom; z--) {
+            coord = coord.parent(<span class="keyword">this</span>.maxzoom);
+            <span class="keyword">var</span> tile = <span class="keyword">this</span>._tiles[coord.id];
+            <span class="keyword">if</span> (tile &amp;&amp; tile.loaded) {
+                retain[coord.id] = <span class="literal">true</span>;
+                <span class="keyword">return</span> tile;
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>._cache.has(coord.id)) {
+                <span class="keyword">this</span>.addTile(coord);
+                retain[coord.id] = <span class="literal">true</span>;
+                <span class="keyword">return</span> <span class="keyword">this</span>._tiles[coord.id];
+            }
+        }
+    },
+
+    <span class="comment">/**
+     * Resizes the tile cache based on the current viewport's size.
+     *
+     * Larger viewports use more tiles and need larger caches. Larger viewports
+     * are more likely to be found on devices with more memory and on pages where
+     * the map is more important.
+     *
+     * @private
+     */</span>
+    updateCacheSize: <span class="keyword">function</span>(transform) {
+        <span class="keyword">var</span> widthInTiles = Math.ceil(transform.width / transform.tileSize) + <span class="number">1</span>;
+        <span class="keyword">var</span> heightInTiles = Math.ceil(transform.height / transform.tileSize) + <span class="number">1</span>;
+        <span class="keyword">var</span> approxTilesInView = widthInTiles * heightInTiles;
+        <span class="keyword">var</span> commonZoomRange = <span class="number">5</span>;
+        <span class="keyword">this</span>._cache.setMaxSize(Math.floor(approxTilesInView * commonZoomRange));
+    },
+
+    <span class="comment">/**
+     * Removes tiles that are outside the viewport and adds new tiles that
+     * are inside the viewport.
+     * @private
+     */</span>
+    update: <span class="keyword">function</span>(used, transform, fadeDuration) {
+        <span class="keyword">var</span> i;
+        <span class="keyword">var</span> coord;
+        <span class="keyword">var</span> tile;
+
+        <span class="keyword">this</span>.updateCacheSize(transform);
+
+        <span class="comment">// Determine the overzooming/underzooming amounts.</span>
+        <span class="keyword">var</span> zoom = (<span class="keyword">this</span>.roundZoom ? Math.round : Math.floor)(<span class="keyword">this</span>.getZoom(transform));
+        <span class="keyword">var</span> minCoveringZoom = Math.max(zoom - TilePyramid.maxOverzooming, <span class="keyword">this</span>.minzoom);
+        <span class="keyword">var</span> maxCoveringZoom = Math.max(zoom + TilePyramid.maxUnderzooming,  <span class="keyword">this</span>.minzoom);
+
+        <span class="comment">// Retain is a list of tiles that we shouldn't delete, even if they are not</span>
+        <span class="comment">// the most ideal tile for the current viewport. This may include tiles like</span>
+        <span class="comment">// parent or child tiles that are *already* loaded.</span>
+        <span class="keyword">var</span> retain = {};
+        <span class="keyword">var</span> now = <span class="keyword">new</span> Date().getTime();
+
+        <span class="comment">// Covered is a list of retained tiles who's areas are full covered by other,</span>
+        <span class="comment">// better, retained tiles. They are not drawn separately.</span>
+        <span class="keyword">this</span>._coveredTiles = {};
+
+        <span class="keyword">var</span> required = used ? <span class="keyword">this</span>.coveringTiles(transform) : [];
+        <span class="keyword">for</span> (i = <span class="number">0</span>; i &lt; required.length; i++) {
+            coord = required[i];
+            tile = <span class="keyword">this</span>.addTile(coord);
+
+            retain[coord.id] = <span class="literal">true</span>;
+
+            <span class="keyword">if</span> (tile.loaded)
+                <span class="keyword">continue</span>;
+
+            <span class="comment">// The tile we require is not yet loaded.</span>
+            <span class="comment">// Retain child or parent tiles that cover the same area.</span>
+            <span class="keyword">if</span> (!<span class="keyword">this</span>.findLoadedChildren(coord, maxCoveringZoom, retain)) {
+                <span class="keyword">this</span>.findLoadedParent(coord, minCoveringZoom, retain);
+            }
+        }
+
+        <span class="keyword">var</span> parentsForFading = {};
+
+        <span class="keyword">var</span> ids = Object.keys(retain);
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; ids.length; k++) {
+            <span class="keyword">var</span> id = ids[k];
+            coord = TileCoord.fromID(id);
+            tile = <span class="keyword">this</span>._tiles[id];
+            <span class="keyword">if</span> (tile &amp;&amp; tile.timeAdded > now - (fadeDuration || <span class="number">0</span>)) {
+                <span class="comment">// This tile is still fading in. Find tiles to cross-fade with it.</span>
+                <span class="keyword">if</span> (<span class="keyword">this</span>.findLoadedChildren(coord, maxCoveringZoom, retain)) {
+                    retain[id] = <span class="literal">true</span>;
+                }
+                <span class="keyword">this</span>.findLoadedParent(coord, minCoveringZoom, parentsForFading);
+            }
+        }
+
+        <span class="keyword">var</span> fadedParent;
+        <span class="keyword">for</span> (fadedParent <span class="keyword">in</span> parentsForFading) {
+            <span class="keyword">if</span> (!retain[fadedParent]) {
+                <span class="comment">// If a tile is only needed for fading, mark it as covered so that it isn't rendered on it's own.</span>
+                <span class="keyword">this</span>._coveredTiles[fadedParent] = <span class="literal">true</span>;
+            }
+        }
+        <span class="keyword">for</span> (fadedParent <span class="keyword">in</span> parentsForFading) {
+            retain[fadedParent] = <span class="literal">true</span>;
+        }
+
+        <span class="comment">// Remove the tiles we don't need anymore.</span>
+        <span class="keyword">var</span> remove = util.keysDifference(<span class="keyword">this</span>._tiles, retain);
+        <span class="keyword">for</span> (i = <span class="number">0</span>; i &lt; remove.length; i++) {
+            <span class="keyword">this</span>.removeTile(+remove[i]);
+        }
+
+        <span class="keyword">this</span>.transform = transform;
+    },
+
+    <span class="comment">/**
+     * Add a tile, given its coordinate, to the pyramid.
+     * @param {Coordinate} coord
+     * @returns {Coordinate} the coordinate.
+     * @private
+     */</span>
+    addTile: <span class="keyword">function</span>(coord) {
+        <span class="keyword">var</span> tile = <span class="keyword">this</span>._tiles[coord.id];
+        <span class="keyword">if</span> (tile)
+            <span class="keyword">return</span> tile;
+
+        <span class="keyword">var</span> wrapped = coord.wrapped();
+        tile = <span class="keyword">this</span>._tiles[wrapped.id];
+
+        <span class="keyword">if</span> (!tile) {
+            tile = <span class="keyword">this</span>._cache.get(wrapped.id);
+            <span class="keyword">if</span> (tile &amp;&amp; <span class="keyword">this</span>._redoPlacement) {
+                <span class="keyword">this</span>._redoPlacement(tile);
+            }
+        }
+
+        <span class="keyword">if</span> (!tile) {
+            <span class="keyword">var</span> zoom = coord.z;
+            <span class="keyword">var</span> overscaling = zoom > <span class="keyword">this</span>.maxzoom ? Math.pow(<span class="number">2</span>, zoom - <span class="keyword">this</span>.maxzoom) : <span class="number">1</span>;
+            tile = <span class="keyword">new</span> Tile(wrapped, <span class="keyword">this</span>.tileSize * overscaling, <span class="keyword">this</span>.maxzoom);
+            <span class="keyword">this</span>._load(tile);
+        }
+
+        tile.uses++;
+        <span class="keyword">this</span>._tiles[coord.id] = tile;
+        <span class="keyword">this</span>._add(tile, coord);
+
+        <span class="keyword">return</span> tile;
+    },
+
+    <span class="comment">/**
+     * Remove a tile, given its id, from the pyramid
+     * @param {string|number} id tile id
+     * @returns {undefined} nothing
+     * @private
+     */</span>
+    removeTile: <span class="keyword">function</span>(id) {
+        <span class="keyword">var</span> tile = <span class="keyword">this</span>._tiles[id];
+        <span class="keyword">if</span> (!tile)
+            <span class="keyword">return</span>;
+
+        tile.uses--;
+        <span class="keyword">delete</span> <span class="keyword">this</span>._tiles[id];
+        <span class="keyword">this</span>._remove(tile);
+
+        <span class="keyword">if</span> (tile.uses > <span class="number">0</span>)
+            <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (tile.loaded) {
+            <span class="keyword">this</span>._cache.add(tile.coord.wrapped().id, tile);
+        } <span class="keyword">else</span> {
+            <span class="keyword">this</span>._abort(tile);
+            <span class="keyword">this</span>._unload(tile);
+        }
+    },
+
+    <span class="comment">/**
+     * Remove all tiles from this pyramid
+     * @private
+     */</span>
+    clearTiles: <span class="keyword">function</span>() {
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>._tiles)
+            <span class="keyword">this</span>.removeTile(id);
+        <span class="keyword">this</span>._cache.reset();
+    },
+
+    <span class="comment">/**
+     * Search through our current tiles and attempt to find the tiles that
+     * cover the given bounds.
+     * @param {Array&lt;Coordinate>} queryGeometry coordinates of the corners of bounding rectangle
+     * @returns {Array&lt;Object>} result items have {tile, minX, maxX, minY, maxY}, where min/max bounding values are the given bounds transformed in into the coordinate space of this tile.
+     * @private
+     */</span>
+    tilesIn: <span class="keyword">function</span>(queryGeometry) {
+        <span class="keyword">var</span> tileResults = {};
+        <span class="keyword">var</span> ids = <span class="keyword">this</span>.orderedIDs();
+
+        <span class="keyword">var</span> minX = <span class="literal">Infinity</span>;
+        <span class="keyword">var</span> minY = <span class="literal">Infinity</span>;
+        <span class="keyword">var</span> maxX = -<span class="literal">Infinity</span>;
+        <span class="keyword">var</span> maxY = -<span class="literal">Infinity</span>;
+        <span class="keyword">var</span> z = queryGeometry[<span class="number">0</span>].zoom;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; queryGeometry.length; k++) {
+            <span class="keyword">var</span> p = queryGeometry[k];
+            minX = Math.min(minX, p.column);
+            minY = Math.min(minY, p.row);
+            maxX = Math.max(maxX, p.column);
+            maxY = Math.max(maxY, p.row);
+        }
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ids.length; i++) {
+            <span class="keyword">var</span> tile = <span class="keyword">this</span>._tiles[ids[i]];
+            <span class="keyword">var</span> coord = TileCoord.fromID(ids[i]);
+
+            <span class="keyword">var</span> tileSpaceBounds = [
+                coordinateToTilePoint(coord, tile.sourceMaxZoom, <span class="keyword">new</span> Coordinate(minX, minY, z)),
+                coordinateToTilePoint(coord, tile.sourceMaxZoom, <span class="keyword">new</span> Coordinate(maxX, maxY, z))
+            ];
+
+            <span class="keyword">if</span> (tileSpaceBounds[<span class="number">0</span>].x &lt; EXTENT &amp;&amp; tileSpaceBounds[<span class="number">0</span>].y &lt; EXTENT &amp;&amp;
+                tileSpaceBounds[<span class="number">1</span>].x >= <span class="number">0</span> &amp;&amp; tileSpaceBounds[<span class="number">1</span>].y >= <span class="number">0</span>) {
+
+                <span class="keyword">var</span> tileSpaceQueryGeometry = [];
+                <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; queryGeometry.length; j++) {
+                    tileSpaceQueryGeometry.push(coordinateToTilePoint(coord, tile.sourceMaxZoom, queryGeometry[j]));
+                }
+
+                <span class="keyword">var</span> tileResult = tileResults[tile.coord.id];
+                <span class="keyword">if</span> (tileResult === <span class="literal">undefined</span>) {
+                    tileResult = tileResults[tile.coord.id] = {
+                        tile: tile,
+                        queryGeometry: [],
+                        scale: Math.pow(<span class="number">2</span>, <span class="keyword">this</span>.transform.zoom - tile.coord.z)
+                    };
+                }
+
+                <span class="comment">// Wrapped tiles share one tileResult object but can have multiple queryGeometry parts</span>
+                tileResult.queryGeometry.push(tileSpaceQueryGeometry);
+            }
+        }
+
+        <span class="keyword">var</span> results = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> t <span class="keyword">in</span> tileResults) {
+            results.push(tileResults[t]);
+        }
+        <span class="keyword">return</span> results;
+    }
+};
+
+<span class="comment">/**
+ * Convert a coordinate to a point in a tile's coordinate space.
+ * @param {Coordinate} tileCoord
+ * @param {Coordinate} coord
+ * @returns {Object} position
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">coordinateToTilePoint</span><span class="params">(tileCoord, sourceMaxZoom, coord)</span> {</span>
+    <span class="keyword">var</span> zoomedCoord = coord.zoomTo(Math.min(tileCoord.z, sourceMaxZoom));
+    <span class="keyword">return</span> {
+        x: (zoomedCoord.column - (tileCoord.x + tileCoord.w * Math.pow(<span class="number">2</span>, tileCoord.z))) * EXTENT,
+        y: (zoomedCoord.row - tileCoord.y) * EXTENT
+    };
+
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compareKeyZoom</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">return</span> (a % <span class="number">32</span>) - (b % <span class="number">32</span>);
+}
+</code></pre>

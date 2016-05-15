@@ -1,0 +1,14 @@
+<h1>background_style_layer.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> StyleLayer = require(<span class="string">'../style_layer'</span>);
+
+<span class="function"><span class="keyword">function</span> <span class="title">BackgroundStyleLayer</span><span class="params">()</span> {</span>
+    StyleLayer.apply(<span class="keyword">this</span>, arguments);
+}
+
+module.exports = BackgroundStyleLayer;
+
+BackgroundStyleLayer.prototype = util.inherit(StyleLayer, {});
+</code></pre>

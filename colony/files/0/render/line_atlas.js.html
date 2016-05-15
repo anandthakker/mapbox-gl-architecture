@@ -1,0 +1,145 @@
+<h1>line_atlas.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = LineAtlas;
+
+<span class="comment">/**
+ * A LineAtlas lets us reuse rendered dashed lines
+ * by writing many of them to a texture and then fetching their positions
+ * using .getDash.
+ *
+ * @param {number} width
+ * @param {number} height
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">LineAtlas</span><span class="params">(width, height)</span> {</span>
+    <span class="keyword">this</span>.width = width;
+    <span class="keyword">this</span>.height = height;
+    <span class="keyword">this</span>.nextRow = <span class="number">0</span>;
+
+    <span class="keyword">this</span>.bytes = <span class="number">4</span>;
+    <span class="keyword">this</span>.data = <span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.width * <span class="keyword">this</span>.height * <span class="keyword">this</span>.bytes);
+
+    <span class="keyword">this</span>.positions = {};
+}
+
+LineAtlas.prototype.setSprite = <span class="keyword">function</span>(sprite) {
+    <span class="keyword">this</span>.sprite = sprite;
+};
+
+<span class="comment">/**
+ * Get or create a dash line pattern.
+ *
+ * @param {Array&lt;number>} dasharray
+ * @param {boolean} round whether to add circle caps in between dash segments
+ * @returns {Object} position of dash texture in { y, height, width }
+ * @private
+ */</span>
+LineAtlas.prototype.getDash = <span class="keyword">function</span>(dasharray, round) {
+    <span class="keyword">var</span> key = dasharray.join(<span class="string">","</span>) + round;
+
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.positions[key]) {
+        <span class="keyword">this</span>.positions[key] = <span class="keyword">this</span>.addDash(dasharray, round);
+    }
+    <span class="keyword">return</span> <span class="keyword">this</span>.positions[key];
+};
+
+LineAtlas.prototype.addDash = <span class="keyword">function</span>(dasharray, round) {
+
+    <span class="keyword">var</span> n = round ? <span class="number">7</span> : <span class="number">0</span>;
+    <span class="keyword">var</span> height = <span class="number">2</span> * n + <span class="number">1</span>;
+    <span class="keyword">var</span> offset = <span class="number">128</span>;
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.nextRow + height > <span class="keyword">this</span>.height) {
+        console.warn(<span class="string">'LineAtlas out of space'</span>);
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> length = <span class="number">0</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; dasharray.length; i++) {
+        length += dasharray[i];
+    }
+
+    <span class="keyword">var</span> stretch = <span class="keyword">this</span>.width / length;
+    <span class="keyword">var</span> halfWidth = stretch / <span class="number">2</span>;
+
+    <span class="comment">// If dasharray has an odd length, both the first and last parts</span>
+    <span class="comment">// are dashes and should be joined seamlessly.</span>
+    <span class="keyword">var</span> oddLength = dasharray.length % <span class="number">2</span> === <span class="number">1</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> y = -n; y &lt;= n; y++) {
+        <span class="keyword">var</span> row = <span class="keyword">this</span>.nextRow + n + y;
+        <span class="keyword">var</span> index = <span class="keyword">this</span>.width * row;
+
+        <span class="keyword">var</span> left = oddLength ? -dasharray[dasharray.length - <span class="number">1</span>] : <span class="number">0</span>;
+        <span class="keyword">var</span> right = dasharray[<span class="number">0</span>];
+        <span class="keyword">var</span> partIndex = <span class="number">1</span>;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> x = <span class="number">0</span>; x &lt; <span class="keyword">this</span>.width; x++) {
+
+            <span class="keyword">while</span> (right &lt; x / stretch) {
+                left = right;
+                right = right + dasharray[partIndex];
+
+                <span class="keyword">if</span> (oddLength &amp;&amp; partIndex === dasharray.length - <span class="number">1</span>) {
+                    right += dasharray[<span class="number">0</span>];
+                }
+
+                partIndex++;
+            }
+
+            <span class="keyword">var</span> distLeft = Math.abs(x - left * stretch);
+            <span class="keyword">var</span> distRight = Math.abs(x - right * stretch);
+            <span class="keyword">var</span> dist = Math.min(distLeft, distRight);
+            <span class="keyword">var</span> inside = (partIndex % <span class="number">2</span>) === <span class="number">1</span>;
+            <span class="keyword">var</span> signedDistance;
+
+            <span class="keyword">if</span> (round) {
+                <span class="comment">// Add circle caps</span>
+                <span class="keyword">var</span> distMiddle = n ? y / n * (halfWidth + <span class="number">1</span>) : <span class="number">0</span>;
+                <span class="keyword">if</span> (inside) {
+                    <span class="keyword">var</span> distEdge = halfWidth - Math.abs(distMiddle);
+                    signedDistance = Math.sqrt(dist * dist + distEdge * distEdge);
+                } <span class="keyword">else</span> {
+                    signedDistance = halfWidth - Math.sqrt(dist * dist + distMiddle * distMiddle);
+                }
+            } <span class="keyword">else</span> {
+                signedDistance = (inside ? <span class="number">1</span> : -<span class="number">1</span>) * dist;
+            }
+
+            <span class="keyword">this</span>.data[<span class="number">3</span> + (index + x) * <span class="number">4</span>] = Math.max(<span class="number">0</span>, Math.min(<span class="number">255</span>, signedDistance + offset));
+        }
+    }
+
+    <span class="keyword">var</span> pos = {
+        y: (<span class="keyword">this</span>.nextRow + n + <span class="number">0.5</span>) / <span class="keyword">this</span>.height,
+        height: <span class="number">2</span> * n / <span class="keyword">this</span>.height,
+        width: length
+    };
+
+    <span class="keyword">this</span>.nextRow += height;
+    <span class="keyword">this</span>.dirty = <span class="literal">true</span>;
+
+    <span class="keyword">return</span> pos;
+};
+
+LineAtlas.prototype.bind = <span class="keyword">function</span>(gl) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.texture) {
+        <span class="keyword">this</span>.texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(gl.TEXTURE_2D, <span class="number">0</span>, gl.RGBA, <span class="keyword">this</span>.width, <span class="keyword">this</span>.height, <span class="number">0</span>, gl.RGBA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.data);
+
+    } <span class="keyword">else</span> {
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.dirty) {
+            <span class="keyword">this</span>.dirty = <span class="literal">false</span>;
+            gl.texSubImage2D(gl.TEXTURE_2D, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="keyword">this</span>.width, <span class="keyword">this</span>.height, gl.RGBA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.data);
+        }
+    }
+};
+</code></pre>

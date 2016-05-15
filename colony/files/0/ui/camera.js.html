@@ -1,0 +1,778 @@
+<h1>camera.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> interpolate = require(<span class="string">'../util/interpolate'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> LngLat = require(<span class="string">'../geo/lng_lat'</span>);
+<span class="keyword">var</span> LngLatBounds = require(<span class="string">'../geo/lng_lat_bounds'</span>);
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+<span class="comment">/**
+ * Options common to Map#jumpTo, Map#easeTo, and Map#flyTo, controlling the destination
+ * location, zoom level, bearing and pitch. All properties are options; unspecified
+ * options will default to the current value for that property.
+ *
+ * @typedef {Object} CameraOptions
+ * @property {LngLat} center Map center
+ * @property {number} zoom Map zoom level
+ * @property {number} bearing Map rotation bearing in degrees counter-clockwise from north
+ * @property {number} pitch Map angle in degrees at which the camera is looking at the ground
+ * @property {LngLat} around If zooming, the zoom center (defaults to map center)
+ */</span>
+
+<span class="comment">/**
+ * Options common to map movement methods that involve animation, such as Map#panBy and
+ * Map#easeTo, controlling the duration of the animation and easing function. All properties
+ * are optional.
+ *
+ * @typedef {Object} AnimationOptions
+ * @property {number} duration Number in milliseconds
+ * @property {Function} easing
+ * @property {Array} offset point, origin of movement relative to map center
+ * @property {boolean} animate When set to false, no animation happens
+ */</span>
+
+<span class="keyword">var</span> Camera = module.exports = <span class="keyword">function</span>() {};
+
+util.extend(Camera.prototype, <span class="comment">/** @lends Map.prototype */</span>{
+    <span class="comment">/**
+     * Get the current view geographical point.
+     * @returns {LngLat}
+     */</span>
+    getCenter: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.transform.center; },
+
+    <span class="comment">/**
+     * Sets a map location. Equivalent to `jumpTo({center: center})`.
+     *
+     * @param {LngLat} center Map center to jump to
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     * @example
+     * map.setCenter([-74, 38]);
+     */</span>
+    setCenter: <span class="keyword">function</span>(center, eventData) {
+        <span class="keyword">this</span>.jumpTo({center: center}, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Pan by a certain number of pixels
+     *
+     * @param {Array&lt;number>} offset [x, y]
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    panBy: <span class="keyword">function</span>(offset, options, eventData) {
+        <span class="keyword">this</span>.panTo(<span class="keyword">this</span>.transform.center,
+            util.extend({offset: Point.convert(offset).mult(-<span class="number">1</span>)}, options), eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Pan to a certain location with easing
+     *
+     * @param {LngLat} lnglat Location to pan to
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    panTo: <span class="keyword">function</span>(lnglat, options, eventData) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.easeTo(util.extend({
+            center: lnglat
+        }, options), eventData);
+    },
+
+
+    <span class="comment">/**
+     * Get the current zoom
+     * @returns {number}
+     */</span>
+    getZoom: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.transform.zoom; },
+
+    <span class="comment">/**
+     * Sets a map zoom. Equivalent to `jumpTo({zoom: zoom})`.
+     *
+     * @param {number} zoom Map zoom level
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires moveend
+     * @fires zoomend
+     * @returns {Map} `this`
+     * @example
+     * // zoom the map to 5
+     * map.setZoom(5);
+     */</span>
+    setZoom: <span class="keyword">function</span>(zoom, eventData) {
+        <span class="keyword">this</span>.jumpTo({zoom: zoom}, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Zooms to a certain zoom level with easing.
+     *
+     * @param {number} zoom
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires moveend
+     * @fires zoomend
+     * @returns {Map} `this`
+     */</span>
+    zoomTo: <span class="keyword">function</span>(zoom, options, eventData) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.easeTo(util.extend({
+            zoom: zoom
+        }, options), eventData);
+    },
+
+    <span class="comment">/**
+     * Zoom in by 1 level
+     *
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires moveend
+     * @fires zoomend
+     * @returns {Map} `this`
+     */</span>
+    zoomIn: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">this</span>.zoomTo(<span class="keyword">this</span>.getZoom() + <span class="number">1</span>, options, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Zoom out by 1 level
+     *
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires moveend
+     * @fires zoomend
+     * @returns {Map} `this`
+     */</span>
+    zoomOut: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">this</span>.zoomTo(<span class="keyword">this</span>.getZoom() - <span class="number">1</span>, options, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+
+    <span class="comment">/**
+     * Get the current bearing in degrees
+     * @returns {number}
+     */</span>
+    getBearing: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.transform.bearing; },
+
+    <span class="comment">/**
+     * Sets a map rotation. Equivalent to `jumpTo({bearing: bearing})`.
+     *
+     * @param {number} bearing Map rotation bearing in degrees counter-clockwise from north
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     * @example
+     * // rotate the map to 90 degrees
+     * map.setBearing(90);
+     */</span>
+    setBearing: <span class="keyword">function</span>(bearing, eventData) {
+        <span class="keyword">this</span>.jumpTo({bearing: bearing}, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Rotate bearing by a certain number of degrees with easing
+     *
+     * @param {number} bearing
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    rotateTo: <span class="keyword">function</span>(bearing, options, eventData) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.easeTo(util.extend({
+            bearing: bearing
+        }, options), eventData);
+    },
+
+    <span class="comment">/**
+     * Sets map bearing to 0 (north) with easing
+     *
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    resetNorth: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">this</span>.rotateTo(<span class="number">0</span>, util.extend({duration: <span class="number">1000</span>}, options), eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Animates map bearing to 0 (north) if it's already close to it.
+     *
+     * @param {AnimationOptions} [options]
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    snapToNorth: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">if</span> (Math.abs(<span class="keyword">this</span>.getBearing()) &lt; <span class="keyword">this</span>.options.bearingSnap) {
+            <span class="keyword">return</span> <span class="keyword">this</span>.resetNorth(options, eventData);
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the current angle in degrees
+     * @returns {number}
+     */</span>
+    getPitch: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.transform.pitch; },
+
+    <span class="comment">/**
+     * Sets a map angle. Equivalent to `jumpTo({pitch: pitch})`.
+     *
+     * @param {number} pitch The angle at which the camera is looking at the ground
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    setPitch: <span class="keyword">function</span>(pitch, eventData) {
+        <span class="keyword">this</span>.jumpTo({pitch: pitch}, eventData);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+
+    <span class="comment">/**
+     * Zoom to contain certain geographical bounds
+     *
+     * @param {LngLatBounds|Array&lt;Array&lt;number>>} bounds [[minLng, minLat], [maxLng, maxLat]]
+     * @param {Object} options
+     * @param {boolean} [options.linear] When true, the map transitions to the new camera using
+     *     {@link #Map.easeTo}. When false, the map transitions using {@link #Map.flyTo}. See
+     *     {@link #Map.flyTo} for information on options specific to that animation transition.
+     * @param {Function} options.easing
+     * @param {number} options.padding how much padding there is around the given bounds on each side in pixels
+     * @param {number} options.maxZoom The resulting zoom level will be at most
+     *     this value.
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    fitBounds: <span class="keyword">function</span>(bounds, options, eventData) {
+
+        options = util.extend({
+            padding: <span class="number">0</span>,
+            offset: [<span class="number">0</span>, <span class="number">0</span>],
+            maxZoom: <span class="literal">Infinity</span>
+        }, options);
+
+        bounds = LngLatBounds.convert(bounds);
+
+        <span class="keyword">var</span> offset = Point.convert(options.offset),
+            tr = <span class="keyword">this</span>.transform,
+            nw = tr.project(bounds.getNorthWest()),
+            se = tr.project(bounds.getSouthEast()),
+            size = se.sub(nw),
+            scaleX = (tr.width - options.padding * <span class="number">2</span> - Math.abs(offset.x) * <span class="number">2</span>) / size.x,
+            scaleY = (tr.height - options.padding * <span class="number">2</span> - Math.abs(offset.y) * <span class="number">2</span>) / size.y;
+
+        options.center = tr.unproject(nw.add(se).div(<span class="number">2</span>));
+        options.zoom = Math.min(tr.scaleZoom(tr.scale * Math.min(scaleX, scaleY)), options.maxZoom);
+        options.bearing = <span class="number">0</span>;
+
+        <span class="keyword">return</span> options.linear ?
+            <span class="keyword">this</span>.easeTo(options, eventData) :
+            <span class="keyword">this</span>.flyTo(options, eventData);
+    },
+
+    <span class="comment">/**
+     * Change any combination of center, zoom, bearing, and pitch, without
+     * a transition. The map will retain the current values for any options
+     * not included in `options`.
+     *
+     * @param {CameraOptions} options map view options
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires rotate
+     * @fires pitch
+     * @fires zoomend
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    jumpTo: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">this</span>.stop();
+
+        <span class="keyword">var</span> tr = <span class="keyword">this</span>.transform,
+            zoomChanged = <span class="literal">false</span>,
+            bearingChanged = <span class="literal">false</span>,
+            pitchChanged = <span class="literal">false</span>;
+
+        <span class="keyword">if</span> (<span class="string">'zoom'</span> <span class="keyword">in</span> options &amp;&amp; tr.zoom !== +options.zoom) {
+            zoomChanged = <span class="literal">true</span>;
+            tr.zoom = +options.zoom;
+        }
+
+        <span class="keyword">if</span> (<span class="string">'center'</span> <span class="keyword">in</span> options) {
+            tr.center = LngLat.convert(options.center);
+        }
+
+        <span class="keyword">if</span> (<span class="string">'bearing'</span> <span class="keyword">in</span> options &amp;&amp; tr.bearing !== +options.bearing) {
+            bearingChanged = <span class="literal">true</span>;
+            tr.bearing = +options.bearing;
+        }
+
+        <span class="keyword">if</span> (<span class="string">'pitch'</span> <span class="keyword">in</span> options &amp;&amp; tr.pitch !== +options.pitch) {
+            pitchChanged = <span class="literal">true</span>;
+            tr.pitch = +options.pitch;
+        }
+
+        <span class="keyword">this</span>.fire(<span class="string">'movestart'</span>, eventData)
+            .fire(<span class="string">'move'</span>, eventData);
+
+        <span class="keyword">if</span> (zoomChanged) {
+            <span class="keyword">this</span>.fire(<span class="string">'zoomstart'</span>, eventData)
+                .fire(<span class="string">'zoom'</span>, eventData)
+                .fire(<span class="string">'zoomend'</span>, eventData);
+        }
+
+        <span class="keyword">if</span> (bearingChanged) {
+            <span class="keyword">this</span>.fire(<span class="string">'rotate'</span>, eventData);
+        }
+
+        <span class="keyword">if</span> (pitchChanged) {
+            <span class="keyword">this</span>.fire(<span class="string">'pitch'</span>, eventData);
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>.fire(<span class="string">'moveend'</span>, eventData);
+    },
+
+    <span class="comment">/**
+     * Change any combination of center, zoom, bearing, and pitch, with a smooth animation
+     * between old and new values. The map will retain the current values for any options
+     * not included in `options`.
+     *
+     * @param {CameraOptions|AnimationOptions} options map view and animation options
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires rotate
+     * @fires pitch
+     * @fires zoomend
+     * @fires moveend
+     * @returns {Map} `this`
+     */</span>
+    easeTo: <span class="keyword">function</span>(options, eventData) {
+        <span class="keyword">this</span>.stop();
+
+        options = util.extend({
+            offset: [<span class="number">0</span>, <span class="number">0</span>],
+            duration: <span class="number">500</span>,
+            easing: util.ease
+        }, options);
+
+        <span class="keyword">var</span> tr = <span class="keyword">this</span>.transform,
+            offset = Point.convert(options.offset),
+            startZoom = <span class="keyword">this</span>.getZoom(),
+            startBearing = <span class="keyword">this</span>.getBearing(),
+            startPitch = <span class="keyword">this</span>.getPitch(),
+
+            zoom = <span class="string">'zoom'</span> <span class="keyword">in</span> options ? +options.zoom : startZoom,
+            bearing = <span class="string">'bearing'</span> <span class="keyword">in</span> options ? <span class="keyword">this</span>._normalizeBearing(options.bearing, startBearing) : startBearing,
+            pitch = <span class="string">'pitch'</span> <span class="keyword">in</span> options ? +options.pitch : startPitch,
+
+            toLngLat,
+            toPoint;
+
+        <span class="keyword">if</span> (<span class="string">'center'</span> <span class="keyword">in</span> options) {
+            toLngLat = LngLat.convert(options.center);
+            toPoint = tr.centerPoint.add(offset);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (<span class="string">'around'</span> <span class="keyword">in</span> options) {
+            toLngLat = LngLat.convert(options.around);
+            toPoint = tr.locationPoint(toLngLat);
+        } <span class="keyword">else</span> {
+            toPoint = tr.centerPoint.add(offset);
+            toLngLat = tr.pointLocation(toPoint);
+        }
+
+        <span class="keyword">var</span> fromPoint = tr.locationPoint(toLngLat);
+
+        <span class="keyword">if</span> (options.animate === <span class="literal">false</span>) options.duration = <span class="number">0</span>;
+
+        <span class="keyword">this</span>.zooming = (zoom !== startZoom);
+        <span class="keyword">this</span>.rotating = (startBearing !== bearing);
+        <span class="keyword">this</span>.pitching = (pitch !== startPitch);
+
+        <span class="keyword">if</span> (!options.noMoveStart) {
+            <span class="keyword">this</span>.fire(<span class="string">'movestart'</span>, eventData);
+        }
+        <span class="keyword">if</span> (<span class="keyword">this</span>.zooming) {
+            <span class="keyword">this</span>.fire(<span class="string">'zoomstart'</span>, eventData);
+        }
+
+        clearTimeout(<span class="keyword">this</span>._onEaseEnd);
+
+        <span class="keyword">this</span>._ease(<span class="function"><span class="keyword">function</span> <span class="params">(k)</span> {</span>
+            <span class="keyword">if</span> (<span class="keyword">this</span>.zooming) {
+                tr.zoom = interpolate(startZoom, zoom, k);
+            }
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.rotating) {
+                tr.bearing = interpolate(startBearing, bearing, k);
+            }
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.pitching) {
+                tr.pitch = interpolate(startPitch, pitch, k);
+            }
+
+            tr.setLocationAtPoint(toLngLat, fromPoint.add(toPoint.sub(fromPoint)._mult(k)));
+
+            <span class="keyword">this</span>.fire(<span class="string">'move'</span>, eventData);
+            <span class="keyword">if</span> (<span class="keyword">this</span>.zooming) {
+                <span class="keyword">this</span>.fire(<span class="string">'zoom'</span>, eventData);
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>.rotating) {
+                <span class="keyword">this</span>.fire(<span class="string">'rotate'</span>, eventData);
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>.pitching) {
+                <span class="keyword">this</span>.fire(<span class="string">'pitch'</span>, eventData);
+            }
+        }, <span class="keyword">function</span>() {
+            <span class="keyword">if</span> (options.delayEndEvents) {
+                <span class="keyword">this</span>._onEaseEnd = setTimeout(<span class="keyword">this</span>._easeToEnd.bind(<span class="keyword">this</span>, eventData), options.delayEndEvents);
+            } <span class="keyword">else</span> {
+                <span class="keyword">this</span>._easeToEnd(eventData);
+            }
+        }.bind(<span class="keyword">this</span>), options);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _easeToEnd: <span class="keyword">function</span>(eventData) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.zooming) {
+            <span class="keyword">this</span>.fire(<span class="string">'zoomend'</span>, eventData);
+        }
+        <span class="keyword">this</span>.fire(<span class="string">'moveend'</span>, eventData);
+
+        <span class="keyword">this</span>.zooming = <span class="literal">false</span>;
+        <span class="keyword">this</span>.rotating = <span class="literal">false</span>;
+        <span class="keyword">this</span>.pitching = <span class="literal">false</span>;
+    },
+
+    <span class="comment">/**
+     * Change any combination of center, zoom, bearing, and pitch, animated along a curve that
+     * evokes flight. The transition animation seamlessly incorporates zooming and panning to help
+     * the user find his or her bearings even after traversing a great distance.
+     *
+     * @param {CameraOptions|AnimationOptions} options map view and animation options
+     * @param {number} [options.curve=1.42] Relative amount of zooming that takes place along the
+     *     flight path. A high value maximizes zooming for an exaggerated animation, while a low
+     *     value minimizes zooming for something closer to {@link #Map.easeTo}. 1.42 is the average
+     *     value selected by participants in the user study in
+     *     [van Wijk (2003)](https://www.win.tue.nl/~vanwijk/zoompan.pdf). A value of
+     *     `Math.pow(6, 0.25)` would be equivalent to the root mean squared average velocity. A
+     *     value of 1 would produce a circular motion.
+     * @param {number} [options.minZoom] Zero-based zoom level at the peak of the flight path. If
+     *     `options.curve` is specified, this option is ignored.
+     * @param {number} [options.speed=1.2] Average speed of the animation. A speed of 1.2 means that
+     *     the map appears to move along the flight path by 1.2 times `options.curve` screenfuls every
+     *     second. A _screenful_ is the visible span in pixels. It does not correspond to a fixed
+     *     physical distance but rather varies by zoom level.
+     * @param {number} [options.screenSpeed] Average speed of the animation, measured in screenfuls
+     *     per second, assuming a linear timing curve. If `options.speed` is specified, this option
+     *     is ignored.
+     * @param {Function} [options.easing] Transition timing curve
+     * @param {EventData} [eventData] Data to propagate to any event receivers
+     * @fires movestart
+     * @fires zoomstart
+     * @fires move
+     * @fires zoom
+     * @fires rotate
+     * @fires pitch
+     * @fires zoomend
+     * @fires moveend
+     * @returns {this}
+     * @example
+     * // fly with default options to null island
+     * map.flyTo({center: [0, 0], zoom: 9});
+     * // using flyTo options
+     * map.flyTo({
+     *   center: [0, 0],
+     *   zoom: 9,
+     *   speed: 0.2,
+     *   curve: 1,
+     *   easing: function(t) {
+     *     return t;
+     *   }
+     * });
+     */</span>
+    flyTo: <span class="keyword">function</span>(options, eventData) {
+        <span class="comment">// This method implements an “optimal path” animation, as detailed in:</span>
+        <span class="comment">//</span>
+        <span class="comment">// Van Wijk, Jarke J.; Nuij, Wim A. A. “Smooth and efficient zooming and panning.” INFOVIS</span>
+        <span class="comment">//   ’03. pp. 15–22. &lt;https://www.win.tue.nl/~vanwijk/zoompan.pdf#page=5>.</span>
+        <span class="comment">//</span>
+        <span class="comment">// Where applicable, local variable documentation begins with the associated variable or</span>
+        <span class="comment">// function in van Wijk (2003).</span>
+
+        <span class="keyword">this</span>.stop();
+
+        options = util.extend({
+            offset: [<span class="number">0</span>, <span class="number">0</span>],
+            speed: <span class="number">1.2</span>,
+            curve: <span class="number">1.42</span>,
+            easing: util.ease
+        }, options);
+
+        <span class="keyword">var</span> tr = <span class="keyword">this</span>.transform,
+            offset = Point.convert(options.offset),
+            startZoom = <span class="keyword">this</span>.getZoom(),
+            startBearing = <span class="keyword">this</span>.getBearing(),
+            startPitch = <span class="keyword">this</span>.getPitch();
+
+        <span class="keyword">var</span> center = <span class="string">'center'</span> <span class="keyword">in</span> options ? LngLat.convert(options.center) : <span class="keyword">this</span>.getCenter();
+        <span class="keyword">var</span> zoom = <span class="string">'zoom'</span> <span class="keyword">in</span> options ?  +options.zoom : startZoom;
+        <span class="keyword">var</span> bearing = <span class="string">'bearing'</span> <span class="keyword">in</span> options ? <span class="keyword">this</span>._normalizeBearing(options.bearing, startBearing) : startBearing;
+        <span class="keyword">var</span> pitch = <span class="string">'pitch'</span> <span class="keyword">in</span> options ? +options.pitch : startPitch;
+
+        <span class="comment">// If a path crossing the antimeridian would be shorter, extend the final coordinate so that</span>
+        <span class="comment">// interpolating between the two endpoints will cross it.</span>
+        <span class="keyword">if</span> (Math.abs(tr.center.lng) + Math.abs(center.lng) > <span class="number">180</span>) {
+            <span class="keyword">if</span> (tr.center.lng > <span class="number">0</span> &amp;&amp; center.lng &lt; <span class="number">0</span>) {
+                center.lng += <span class="number">360</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (tr.center.lng &lt; <span class="number">0</span> &amp;&amp; center.lng > <span class="number">0</span>) {
+                center.lng -= <span class="number">360</span>;
+            }
+        }
+
+        <span class="keyword">var</span> scale = tr.zoomScale(zoom - startZoom),
+            from = tr.point,
+            to = <span class="string">'center'</span> <span class="keyword">in</span> options ? tr.project(center).sub(offset.div(scale)) : from;
+
+        <span class="keyword">var</span> startWorldSize = tr.worldSize,
+            rho = options.curve,
+
+            <span class="comment">// w₀: Initial visible span, measured in pixels at the initial scale.</span>
+            w0 = Math.max(tr.width, tr.height),
+            <span class="comment">// w₁: Final visible span, measured in pixels with respect to the initial scale.</span>
+            w1 = w0 / scale,
+            <span class="comment">// Length of the flight path as projected onto the ground plane, measured in pixels from</span>
+            <span class="comment">// the world image origin at the initial scale.</span>
+            u1 = to.sub(from).mag();
+
+        <span class="keyword">if</span> (<span class="string">'minZoom'</span> <span class="keyword">in</span> options) {
+            <span class="keyword">var</span> minZoom = util.clamp(Math.min(options.minZoom, startZoom, zoom), tr.minZoom, tr.maxZoom);
+            <span class="comment">// w&lt;sub>m&lt;/sub>: Maximum visible span, measured in pixels with respect to the initial</span>
+            <span class="comment">// scale.</span>
+            <span class="keyword">var</span> wMax = w0 / tr.zoomScale(minZoom - startZoom);
+            rho = Math.sqrt(wMax / u1 * <span class="number">2</span>);
+        }
+
+        <span class="comment">// ρ²</span>
+        <span class="keyword">var</span> rho2 = rho * rho;
+
+        <span class="comment">/**
+         * rᵢ: Returns the zoom-out factor at one end of the animation.
+         *
+         * @param i 0 for the ascent or 1 for the descent.
+         * @private
+         */</span>
+        <span class="function"><span class="keyword">function</span> <span class="title">r</span><span class="params">(i)</span> {</span>
+            <span class="keyword">var</span> b = (w1 * w1 - w0 * w0 + (i ? -<span class="number">1</span> : <span class="number">1</span>) * rho2 * rho2 * u1 * u1) / (<span class="number">2</span> * (i ? w1 : w0) * rho2 * u1);
+            <span class="keyword">return</span> Math.log(Math.sqrt(b * b + <span class="number">1</span>) - b);
+        }
+
+        <span class="function"><span class="keyword">function</span> <span class="title">sinh</span><span class="params">(n)</span> {</span> <span class="keyword">return</span> (Math.exp(n) - Math.exp(-n)) / <span class="number">2</span>; }
+        <span class="function"><span class="keyword">function</span> <span class="title">cosh</span><span class="params">(n)</span> {</span> <span class="keyword">return</span> (Math.exp(n) + Math.exp(-n)) / <span class="number">2</span>; }
+        <span class="function"><span class="keyword">function</span> <span class="title">tanh</span><span class="params">(n)</span> {</span> <span class="keyword">return</span> sinh(n) / cosh(n); }
+
+        <span class="comment">// r₀: Zoom-out factor during ascent.</span>
+        <span class="keyword">var</span> r0 = r(<span class="number">0</span>),
+            <span class="comment">/**
+             * w(s): Returns the visible span on the ground, measured in pixels with respect to the
+             * initial scale.
+             *
+             * Assumes an angular field of view of 2 arctan ½ ≈ 53°.
+             * @private
+             */</span>
+            w = <span class="function"><span class="keyword">function</span> <span class="params">(s)</span> {</span> <span class="keyword">return</span> (cosh(r0) / cosh(r0 + rho * s)); },
+            <span class="comment">/**
+             * u(s): Returns the distance along the flight path as projected onto the ground plane,
+             * measured in pixels from the world image origin at the initial scale.
+             * @private
+             */</span>
+            u = <span class="function"><span class="keyword">function</span> <span class="params">(s)</span> {</span> <span class="keyword">return</span> w0 * ((cosh(r0) * tanh(r0 + rho * s) - sinh(r0)) / rho2) / u1; },
+            <span class="comment">// S: Total length of the flight path, measured in ρ-screenfuls.</span>
+            S = (r(<span class="number">1</span>) - r0) / rho;
+
+        <span class="comment">// When u₀ = u₁, the optimal path doesn’t require both ascent and descent.</span>
+        <span class="keyword">if</span> (Math.abs(u1) &lt; <span class="number">0.000001</span>) {
+            <span class="comment">// Perform a more or less instantaneous transition if the path is too short.</span>
+            <span class="keyword">if</span> (Math.abs(w0 - w1) &lt; <span class="number">0.000001</span>) <span class="keyword">return</span> <span class="keyword">this</span>.easeTo(options);
+
+            <span class="keyword">var</span> k = w1 &lt; w0 ? -<span class="number">1</span> : <span class="number">1</span>;
+            S = Math.abs(Math.log(w1 / w0)) / rho;
+
+            u = <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="number">0</span>; };
+            w = <span class="keyword">function</span>(s) { <span class="keyword">return</span> Math.exp(k * rho * s); };
+        }
+
+        <span class="keyword">if</span> (<span class="string">'duration'</span> <span class="keyword">in</span> options) {
+            options.duration = +options.duration;
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> V = <span class="string">'screenSpeed'</span> <span class="keyword">in</span> options ? +options.screenSpeed / rho : +options.speed;
+            options.duration = <span class="number">1000</span> * S / V;
+        }
+
+        <span class="keyword">this</span>.zooming = <span class="literal">true</span>;
+        <span class="keyword">if</span> (startBearing !== bearing) <span class="keyword">this</span>.rotating = <span class="literal">true</span>;
+        <span class="keyword">if</span> (startPitch !== pitch) <span class="keyword">this</span>.pitching = <span class="literal">true</span>;
+
+        <span class="keyword">this</span>.fire(<span class="string">'movestart'</span>, eventData);
+        <span class="keyword">this</span>.fire(<span class="string">'zoomstart'</span>, eventData);
+
+        <span class="keyword">this</span>._ease(<span class="function"><span class="keyword">function</span> <span class="params">(k)</span> {</span>
+            <span class="comment">// s: The distance traveled along the flight path, measured in ρ-screenfuls.</span>
+            <span class="keyword">var</span> s = k * S,
+                us = u(s);
+
+            tr.zoom = startZoom + tr.scaleZoom(<span class="number">1</span> / w(s));
+            tr.center = tr.unproject(from.add(to.sub(from).mult(us)), startWorldSize);
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>.rotating) {
+                tr.bearing = interpolate(startBearing, bearing, k);
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>.pitching) {
+                tr.pitch = interpolate(startPitch, pitch, k);
+            }
+
+            <span class="keyword">this</span>.fire(<span class="string">'move'</span>, eventData);
+            <span class="keyword">this</span>.fire(<span class="string">'zoom'</span>, eventData);
+            <span class="keyword">if</span> (<span class="keyword">this</span>.rotating) {
+                <span class="keyword">this</span>.fire(<span class="string">'rotate'</span>, eventData);
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>.pitching) {
+                <span class="keyword">this</span>.fire(<span class="string">'pitch'</span>, eventData);
+            }
+        }, <span class="keyword">function</span>() {
+            <span class="keyword">this</span>.fire(<span class="string">'zoomend'</span>, eventData);
+            <span class="keyword">this</span>.fire(<span class="string">'moveend'</span>, eventData);
+            <span class="keyword">this</span>.zooming = <span class="literal">false</span>;
+            <span class="keyword">this</span>.rotating = <span class="literal">false</span>;
+            <span class="keyword">this</span>.pitching = <span class="literal">false</span>;
+        }, options);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    isEasing: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> !!<span class="keyword">this</span>._abortFn;
+    },
+
+    <span class="comment">/**
+     * Stop current animation
+     *
+     * @returns {Map} `this`
+     */</span>
+    stop: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._abortFn) {
+            <span class="keyword">this</span>._abortFn();
+            <span class="keyword">this</span>._finishEase();
+        }
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _ease: <span class="keyword">function</span>(frame, finish, options) {
+        <span class="keyword">this</span>._finishFn = finish;
+        <span class="keyword">this</span>._abortFn = browser.timed(<span class="function"><span class="keyword">function</span> <span class="params">(t)</span> {</span>
+            frame.call(<span class="keyword">this</span>, options.easing(t));
+            <span class="keyword">if</span> (t === <span class="number">1</span>) {
+                <span class="keyword">this</span>._finishEase();
+            }
+        }, options.animate === <span class="literal">false</span> ? <span class="number">0</span> : options.duration, <span class="keyword">this</span>);
+    },
+
+    _finishEase: <span class="keyword">function</span>() {
+        <span class="keyword">delete</span> <span class="keyword">this</span>._abortFn;
+        <span class="comment">// The finish function might emit events which trigger new eases, which</span>
+        <span class="comment">// set a new _finishFn. Ensure we don't delete it unintentionally.</span>
+        <span class="keyword">var</span> finish = <span class="keyword">this</span>._finishFn;
+        <span class="keyword">delete</span> <span class="keyword">this</span>._finishFn;
+        finish.call(<span class="keyword">this</span>);
+    },
+
+    <span class="comment">// convert bearing so that it's numerically close to the current one so that it interpolates properly</span>
+    _normalizeBearing: <span class="keyword">function</span>(bearing, currentBearing) {
+        bearing = util.wrap(bearing, -<span class="number">180</span>, <span class="number">180</span>);
+        <span class="keyword">var</span> diff = Math.abs(bearing - currentBearing);
+        <span class="keyword">if</span> (Math.abs(bearing - <span class="number">360</span> - currentBearing) &lt; diff) bearing -= <span class="number">360</span>;
+        <span class="keyword">if</span> (Math.abs(bearing + <span class="number">360</span> - currentBearing) &lt; diff) bearing += <span class="number">360</span>;
+        <span class="keyword">return</span> bearing;
+    },
+
+    _updateEasing: <span class="keyword">function</span>(duration, zoom, bezier) {
+        <span class="keyword">var</span> easing;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.ease) {
+            <span class="keyword">var</span> ease = <span class="keyword">this</span>.ease,
+                t = (Date.now() - ease.start) / ease.duration,
+                speed = ease.easing(t + <span class="number">0.01</span>) - ease.easing(t),
+
+                <span class="comment">// Quick hack to make new bezier that is continuous with last</span>
+                x = <span class="number">0.27</span> / Math.sqrt(speed * speed + <span class="number">0.0001</span>) * <span class="number">0.01</span>,
+                y = Math.sqrt(<span class="number">0.27</span> * <span class="number">0.27</span> - x * x);
+
+            easing = util.bezier(x, y, <span class="number">0.25</span>, <span class="number">1</span>);
+        } <span class="keyword">else</span> {
+            easing = bezier ? util.bezier.apply(util, bezier) : util.ease;
+        }
+
+        <span class="comment">// store information on current easing</span>
+        <span class="keyword">this</span>.ease = {
+            start: (<span class="keyword">new</span> Date()).getTime(),
+            to: Math.pow(<span class="number">2</span>, zoom),
+            duration: duration,
+            easing: easing
+        };
+
+        <span class="keyword">return</span> easing;
+    }
+});
+
+<span class="comment">/**
+ * Pitch event. This event is emitted whenever the map's pitch changes.
+ *
+ * @event pitch
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+</code></pre>

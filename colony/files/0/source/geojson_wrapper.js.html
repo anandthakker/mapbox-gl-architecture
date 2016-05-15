@@ -1,0 +1,69 @@
+<h1>geojson_wrapper.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+<span class="keyword">var</span> VectorTileFeature = require(<span class="string">'vector-tile'</span>).VectorTileFeature;
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+
+module.exports = GeoJSONWrapper;
+
+<span class="comment">// conform to vectortile api</span>
+<span class="function"><span class="keyword">function</span> <span class="title">GeoJSONWrapper</span><span class="params">(features)</span> {</span>
+    <span class="keyword">this</span>.features = features;
+    <span class="keyword">this</span>.length = features.length;
+    <span class="keyword">this</span>.extent = EXTENT;
+}
+
+GeoJSONWrapper.prototype.feature = <span class="keyword">function</span>(i) {
+    <span class="keyword">return</span> <span class="keyword">new</span> FeatureWrapper(<span class="keyword">this</span>.features[i]);
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">FeatureWrapper</span><span class="params">(feature)</span> {</span>
+    <span class="keyword">this</span>.type = feature.type;
+    <span class="keyword">this</span>.rawGeometry = feature.type === <span class="number">1</span> ? [feature.geometry] : feature.geometry;
+    <span class="keyword">this</span>.properties = feature.tags;
+    <span class="keyword">this</span>.extent = EXTENT;
+}
+
+FeatureWrapper.prototype.loadGeometry = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> rings = <span class="keyword">this</span>.rawGeometry;
+    <span class="keyword">this</span>.geometry = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; rings.length; i++) {
+        <span class="keyword">var</span> ring = rings[i],
+            newRing = [];
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; ring.length; j++) {
+            newRing.push(<span class="keyword">new</span> Point(ring[j][<span class="number">0</span>], ring[j][<span class="number">1</span>]));
+        }
+        <span class="keyword">this</span>.geometry.push(newRing);
+    }
+    <span class="keyword">return</span> <span class="keyword">this</span>.geometry;
+};
+
+FeatureWrapper.prototype.bbox = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.geometry) <span class="keyword">this</span>.loadGeometry();
+
+    <span class="keyword">var</span> rings = <span class="keyword">this</span>.geometry,
+        x1 = <span class="literal">Infinity</span>,
+        x2 = -<span class="literal">Infinity</span>,
+        y1 = <span class="literal">Infinity</span>,
+        y2 = -<span class="literal">Infinity</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; rings.length; i++) {
+        <span class="keyword">var</span> ring = rings[i];
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; ring.length; j++) {
+            <span class="keyword">var</span> coord = ring[j];
+
+            x1 = Math.min(x1, coord.x);
+            x2 = Math.max(x2, coord.x);
+            y1 = Math.min(y1, coord.y);
+            y2 = Math.max(y2, coord.y);
+        }
+    }
+
+    <span class="keyword">return</span> [x1, y1, x2, y2];
+};
+
+FeatureWrapper.prototype.toGeoJSON = VectorTileFeature.prototype.toGeoJSON;
+</code></pre>

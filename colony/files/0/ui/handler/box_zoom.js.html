@@ -1,0 +1,176 @@
+<h1>box_zoom.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>),
+    LngLatBounds = require(<span class="string">'../../geo/lng_lat_bounds'</span>),
+    util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = BoxZoomHandler;
+
+<span class="comment">/**
+ * The `BoxZoomHandler` allows a user to zoom the map to fit a bounding box.
+ * The bounding box is defined by holding `shift` while dragging the cursor.
+ * @class BoxZoomHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">BoxZoomHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+    <span class="keyword">this</span>._container = map.getContainer();
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+BoxZoomHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+    _active: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "box zoom" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Returns true if the "box zoom" interaction is currently active, i.e. currently being used.
+     * @returns {boolean} active state
+     */</span>
+    isActive: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._active;
+    },
+
+    <span class="comment">/**
+     * Enable the "box zoom" interaction.
+     * @example
+     *   map.boxZoom.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onMouseDown, <span class="literal">false</span>);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "box zoom" interaction.
+     * @example
+     *   map.boxZoom.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onMouseDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onMouseDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (!(e.shiftKey &amp;&amp; e.button === <span class="number">0</span>)) <span class="keyword">return</span>;
+
+        document.addEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMouseMove, <span class="literal">false</span>);
+        document.addEventListener(<span class="string">'keydown'</span>, <span class="keyword">this</span>._onKeyDown, <span class="literal">false</span>);
+        document.addEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp, <span class="literal">false</span>);
+
+        DOM.disableDrag();
+        <span class="keyword">this</span>._startPos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+        <span class="keyword">this</span>._active = <span class="literal">true</span>;
+    },
+
+    _onMouseMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> p0 = <span class="keyword">this</span>._startPos,
+            p1 = DOM.mousePos(<span class="keyword">this</span>._el, e);
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._box) {
+            <span class="keyword">this</span>._box = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-boxzoom'</span>, <span class="keyword">this</span>._container);
+            <span class="keyword">this</span>._container.classList.add(<span class="string">'mapboxgl-crosshair'</span>);
+            <span class="keyword">this</span>._fireEvent(<span class="string">'boxzoomstart'</span>, e);
+        }
+
+        <span class="keyword">var</span> minX = Math.min(p0.x, p1.x),
+            maxX = Math.max(p0.x, p1.x),
+            minY = Math.min(p0.y, p1.y),
+            maxY = Math.max(p0.y, p1.y);
+
+        DOM.setTransform(<span class="keyword">this</span>._box, <span class="string">'translate('</span> + minX + <span class="string">'px,'</span> + minY + <span class="string">'px)'</span>);
+
+        <span class="keyword">this</span>._box.style.width = (maxX - minX) + <span class="string">'px'</span>;
+        <span class="keyword">this</span>._box.style.height = (maxY - minY) + <span class="string">'px'</span>;
+    },
+
+    _onMouseUp: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (e.button !== <span class="number">0</span>) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> p0 = <span class="keyword">this</span>._startPos,
+            p1 = DOM.mousePos(<span class="keyword">this</span>._el, e),
+            bounds = <span class="keyword">new</span> LngLatBounds(<span class="keyword">this</span>._map.unproject(p0), <span class="keyword">this</span>._map.unproject(p1));
+
+        <span class="keyword">this</span>._finish();
+
+        <span class="keyword">if</span> (p0.x === p1.x &amp;&amp; p0.y === p1.y) {
+            <span class="keyword">this</span>._fireEvent(<span class="string">'boxzoomcancel'</span>, e);
+        } <span class="keyword">else</span> {
+            <span class="keyword">this</span>._map
+                .fitBounds(bounds, {linear: <span class="literal">true</span>})
+                .fire(<span class="string">'boxzoomend'</span>, { originalEvent: e, boxZoomBounds: bounds });
+        }
+    },
+
+    _onKeyDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (e.keyCode === <span class="number">27</span>) {
+            <span class="keyword">this</span>._finish();
+            <span class="keyword">this</span>._fireEvent(<span class="string">'boxzoomcancel'</span>, e);
+        }
+    },
+
+    _finish: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">this</span>._active = <span class="literal">false</span>;
+
+        document.removeEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMouseMove, <span class="literal">false</span>);
+        document.removeEventListener(<span class="string">'keydown'</span>, <span class="keyword">this</span>._onKeyDown, <span class="literal">false</span>);
+        document.removeEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp, <span class="literal">false</span>);
+
+        <span class="keyword">this</span>._container.classList.remove(<span class="string">'mapboxgl-crosshair'</span>);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._box) {
+            <span class="keyword">this</span>._box.parentNode.removeChild(<span class="keyword">this</span>._box);
+            <span class="keyword">this</span>._box = <span class="literal">null</span>;
+        }
+
+        DOM.enableDrag();
+    },
+
+    _fireEvent: <span class="function"><span class="keyword">function</span> <span class="params">(type, e)</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._map.fire(type, { originalEvent: e });
+    }
+};
+
+
+<span class="comment">/**
+ * Boxzoom start event. This event is emitted at the start of a box zoom interaction.
+ *
+ * @event boxzoomstart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Boxzoom end event. This event is emitted at the end of a box zoom interaction
+ *
+ * @event boxzoomend
+ * @memberof Map
+ * @instance
+ * @type {Object}
+ * @property {Event} originalEvent the original DOM event
+ * @property {LngLatBounds} boxZoomBounds the bounds of the box zoom target
+ */</span>
+
+<span class="comment">/**
+ * Boxzoom cancel event.  This event is emitted when the user cancels a box zoom interaction,
+ *   or when the box zoom does not meet the minimum size threshold.
+ *
+ * @event boxzoomcancel
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+</code></pre>

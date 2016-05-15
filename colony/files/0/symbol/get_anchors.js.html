@@ -1,0 +1,104 @@
+<h1>get_anchors.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> interpolate = require(<span class="string">'../util/interpolate'</span>);
+<span class="keyword">var</span> Anchor = require(<span class="string">'../symbol/anchor'</span>);
+<span class="keyword">var</span> checkMaxAngle = require(<span class="string">'./check_max_angle'</span>);
+
+module.exports = getAnchors;
+
+<span class="function"><span class="keyword">function</span> <span class="title">getAnchors</span><span class="params">(line, spacing, maxAngle, shapedText, shapedIcon, glyphSize, boxScale, overscaling, tileExtent)</span> {</span>
+
+    <span class="comment">// Resample a line to get anchor points for labels and check that each</span>
+    <span class="comment">// potential label passes text-max-angle check and has enough froom to fit</span>
+    <span class="comment">// on the line.</span>
+
+    <span class="keyword">var</span> angleWindowSize = shapedText ?
+        <span class="number">3</span> / <span class="number">5</span> * glyphSize * boxScale :
+        <span class="number">0</span>;
+
+    <span class="keyword">var</span> labelLength = Math.max(
+        shapedText ? shapedText.right - shapedText.left : <span class="number">0</span>,
+        shapedIcon ? shapedIcon.right - shapedIcon.left : <span class="number">0</span>);
+
+    <span class="comment">// Is the line continued from outside the tile boundary?</span>
+    <span class="keyword">var</span> isLineContinued = line[<span class="number">0</span>].x === <span class="number">0</span> || line[<span class="number">0</span>].x === tileExtent || line[<span class="number">0</span>].y === <span class="number">0</span> || line[<span class="number">0</span>].y === tileExtent;
+
+    <span class="comment">// Is the label long, relative to the spacing?</span>
+    <span class="comment">// If so, adjust the spacing so there is always a minimum space of `spacing / 4` between label edges.</span>
+    <span class="keyword">if</span> (spacing - labelLength * boxScale  &lt; spacing / <span class="number">4</span>) {
+        spacing = labelLength * boxScale + spacing / <span class="number">4</span>;
+    }
+
+    <span class="comment">// Offset the first anchor by:</span>
+    <span class="comment">// Either half the label length plus a fixed extra offset if the line is not continued</span>
+    <span class="comment">// Or half the spacing if the line is continued.</span>
+
+    <span class="comment">// For non-continued lines, add a bit of fixed extra offset to avoid collisions at T intersections.</span>
+    <span class="keyword">var</span> fixedExtraOffset = glyphSize * <span class="number">2</span>;
+
+    <span class="keyword">var</span> offset = !isLineContinued ?
+        ((labelLength / <span class="number">2</span> + fixedExtraOffset) * boxScale * overscaling) % spacing :
+        (spacing / <span class="number">2</span> * overscaling) % spacing;
+
+    <span class="keyword">return</span> resample(line, offset, spacing, angleWindowSize, maxAngle, labelLength * boxScale, isLineContinued, <span class="literal">false</span>, tileExtent);
+}
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">resample</span><span class="params">(line, offset, spacing, angleWindowSize, maxAngle, labelLength, isLineContinued, placeAtMiddle, tileExtent)</span> {</span>
+
+    <span class="keyword">var</span> halfLabelLength = labelLength / <span class="number">2</span>;
+    <span class="keyword">var</span> lineLength = <span class="number">0</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; line.length - <span class="number">1</span>; k++) {
+        lineLength += line[k].dist(line[k + <span class="number">1</span>]);
+    }
+
+    <span class="keyword">var</span> distance = <span class="number">0</span>,
+        markedDistance = offset - spacing;
+
+    <span class="keyword">var</span> anchors = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; line.length - <span class="number">1</span>; i++) {
+
+        <span class="keyword">var</span> a = line[i],
+            b = line[i + <span class="number">1</span>];
+
+        <span class="keyword">var</span> segmentDist = a.dist(b),
+            angle = b.angleTo(a);
+
+        <span class="keyword">while</span> (markedDistance + spacing &lt; distance + segmentDist) {
+            markedDistance += spacing;
+
+            <span class="keyword">var</span> t = (markedDistance - distance) / segmentDist,
+                x = interpolate(a.x, b.x, t),
+                y = interpolate(a.y, b.y, t);
+
+            <span class="comment">// Check that the point is within the tile boundaries and that</span>
+            <span class="comment">// the label would fit before the beginning and end of the line</span>
+            <span class="comment">// if placed at this point.</span>
+            <span class="keyword">if</span> (x >= <span class="number">0</span> &amp;&amp; x &lt; tileExtent &amp;&amp; y >= <span class="number">0</span> &amp;&amp; y &lt; tileExtent &amp;&amp;
+                    markedDistance - halfLabelLength >= <span class="number">0</span> &amp;&amp;
+                    markedDistance + halfLabelLength &lt;= lineLength) {
+                <span class="keyword">var</span> anchor = <span class="keyword">new</span> Anchor(x, y, angle, i)._round();
+
+                <span class="keyword">if</span> (!angleWindowSize || checkMaxAngle(line, anchor, labelLength, angleWindowSize, maxAngle)) {
+                    anchors.push(anchor);
+                }
+            }
+        }
+
+        distance += segmentDist;
+    }
+
+    <span class="keyword">if</span> (!placeAtMiddle &amp;&amp; !anchors.length &amp;&amp; !isLineContinued) {
+        <span class="comment">// The first attempt at finding anchors at which labels can be placed failed.</span>
+        <span class="comment">// Try again, but this time just try placing one anchor at the middle of the line.</span>
+        <span class="comment">// This has the most effect for short lines in overscaled tiles, since the</span>
+        <span class="comment">// initial offset used in overscaled tiles is calculated to align labels with positions in</span>
+        <span class="comment">// parent tiles instead of placing the label as close to the beginning as possible.</span>
+        anchors = resample(line, distance / <span class="number">2</span>, spacing, angleWindowSize, maxAngle, labelLength, isLineContinued, <span class="literal">true</span>, tileExtent);
+    }
+
+    <span class="keyword">return</span> anchors;
+}
+</code></pre>

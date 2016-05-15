@@ -1,0 +1,244 @@
+<h1>drag_rotate.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>),
+    Point = require(<span class="string">'point-geometry'</span>),
+    util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = DragRotateHandler;
+
+<span class="keyword">var</span> inertiaLinearity = <span class="number">0.25</span>,
+    inertiaEasing = util.bezier(<span class="number">0</span>, <span class="number">0</span>, inertiaLinearity, <span class="number">1</span>),
+    inertiaMaxSpeed = <span class="number">180</span>, <span class="comment">// deg/s</span>
+    inertiaDeceleration = <span class="number">720</span>; <span class="comment">// deg/s^2</span>
+
+
+<span class="comment">/**
+ * The `DragRotateHandler` allows a user to rotate the map by clicking and
+ * dragging the cursor while holding the right mouse button or the `ctrl` key.
+ * @class DragRotateHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">DragRotateHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+DragRotateHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+    _active: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "drag to rotate" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Returns true if the "drag to rotate" interaction is currently active, i.e. currently being used.
+     * @returns {boolean} active state
+     */</span>
+    isActive: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._active;
+    },
+
+    <span class="comment">/**
+     * Enable the "drag to rotate" interaction.
+     * @example
+     * map.dragRotate.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "drag to rotate" interaction.
+     * @example
+     * map.dragRotate.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isActive()) <span class="keyword">return</span>;
+
+        document.addEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMove);
+        document.addEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onUp);
+
+        <span class="keyword">this</span>._active = <span class="literal">false</span>;
+        <span class="keyword">this</span>._inertia = [[Date.now(), <span class="keyword">this</span>._map.getBearing()]];
+        <span class="keyword">this</span>._startPos = <span class="keyword">this</span>._pos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+        <span class="keyword">this</span>._center = <span class="keyword">this</span>._map.transform.centerPoint;  <span class="comment">// Center of rotation</span>
+
+        <span class="comment">// If the first click was too close to the center, move the center of rotation by 200 pixels</span>
+        <span class="comment">// in the direction of the click.</span>
+        <span class="keyword">var</span> startToCenter = <span class="keyword">this</span>._startPos.sub(<span class="keyword">this</span>._center),
+            startToCenterDist = startToCenter.mag();
+
+        <span class="keyword">if</span> (startToCenterDist &lt; <span class="number">200</span>) {
+            <span class="keyword">this</span>._center = <span class="keyword">this</span>._startPos.add(<span class="keyword">new</span> Point(-<span class="number">200</span>, <span class="number">0</span>)._rotate(startToCenter.angle()));
+        }
+
+        e.preventDefault();
+    },
+
+    _onMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isActive()) {
+            <span class="keyword">this</span>._active = <span class="literal">true</span>;
+            <span class="keyword">this</span>._fireEvent(<span class="string">'rotatestart'</span>, e);
+            <span class="keyword">this</span>._fireEvent(<span class="string">'movestart'</span>, e);
+        }
+
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map;
+        map.stop();
+
+        <span class="keyword">var</span> p1 = <span class="keyword">this</span>._pos,
+            p2 = DOM.mousePos(<span class="keyword">this</span>._el, e),
+            center = <span class="keyword">this</span>._center,
+            bearingDiff = p1.sub(center).angleWith(p2.sub(center)) / Math.PI * <span class="number">180</span>,
+            bearing = map.getBearing() - bearingDiff,
+            inertia = <span class="keyword">this</span>._inertia,
+            last = inertia[inertia.length - <span class="number">1</span>];
+
+        <span class="keyword">this</span>._drainInertiaBuffer();
+        inertia.push([Date.now(), map._normalizeBearing(bearing, last[<span class="number">1</span>])]);
+
+        map.transform.bearing = bearing;
+
+        <span class="keyword">this</span>._fireEvent(<span class="string">'rotate'</span>, e);
+        <span class="keyword">this</span>._fireEvent(<span class="string">'move'</span>, e);
+
+        <span class="keyword">this</span>._pos = p2;
+    },
+
+    _onUp: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+        document.removeEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMove);
+        document.removeEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onUp);
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isActive()) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._active = <span class="literal">false</span>;
+        <span class="keyword">this</span>._fireEvent(<span class="string">'rotateend'</span>, e);
+        <span class="keyword">this</span>._drainInertiaBuffer();
+
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map,
+            mapBearing = map.getBearing(),
+            inertia = <span class="keyword">this</span>._inertia;
+
+        <span class="keyword">var</span> finish = <span class="keyword">function</span>() {
+            <span class="keyword">if</span> (Math.abs(mapBearing) &lt; map.options.bearingSnap) {
+                map.resetNorth({noMoveStart: <span class="literal">true</span>}, { originalEvent: e });
+            } <span class="keyword">else</span> {
+                <span class="keyword">this</span>._fireEvent(<span class="string">'moveend'</span>, e);
+            }
+        }.bind(<span class="keyword">this</span>);
+
+        <span class="keyword">if</span> (inertia.length &lt; <span class="number">2</span>) {
+            finish();
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">var</span> first = inertia[<span class="number">0</span>],
+            last = inertia[inertia.length - <span class="number">1</span>],
+            previous = inertia[inertia.length - <span class="number">2</span>],
+            bearing = map._normalizeBearing(mapBearing, previous[<span class="number">1</span>]),
+            flingDiff = last[<span class="number">1</span>] - first[<span class="number">1</span>],
+            sign = flingDiff &lt; <span class="number">0</span> ? -<span class="number">1</span> : <span class="number">1</span>,
+            flingDuration = (last[<span class="number">0</span>] - first[<span class="number">0</span>]) / <span class="number">1000</span>;
+
+        <span class="keyword">if</span> (flingDiff === <span class="number">0</span> || flingDuration === <span class="number">0</span>) {
+            finish();
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">var</span> speed = Math.abs(flingDiff * (inertiaLinearity / flingDuration));  <span class="comment">// deg/s</span>
+        <span class="keyword">if</span> (speed > inertiaMaxSpeed) {
+            speed = inertiaMaxSpeed;
+        }
+
+        <span class="keyword">var</span> duration = speed / (inertiaDeceleration * inertiaLinearity),
+            offset = sign * speed * (duration / <span class="number">2</span>);
+
+        bearing += offset;
+
+        <span class="keyword">if</span> (Math.abs(map._normalizeBearing(bearing, <span class="number">0</span>)) &lt; map.options.bearingSnap) {
+            bearing = map._normalizeBearing(<span class="number">0</span>, bearing);
+        }
+
+        map.rotateTo(bearing, {
+            duration: duration * <span class="number">1000</span>,
+            easing: inertiaEasing,
+            noMoveStart: <span class="literal">true</span>
+        }, { originalEvent: e });
+    },
+
+    _fireEvent: <span class="function"><span class="keyword">function</span> <span class="params">(type, e)</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._map.fire(type, { originalEvent: e });
+    },
+
+    _ignoreEvent: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map;
+
+        <span class="keyword">if</span> (map.boxZoom &amp;&amp; map.boxZoom.isActive()) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (map.dragPan &amp;&amp; map.dragPan.isActive()) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (e.touches) {
+            <span class="keyword">return</span> (e.touches.length > <span class="number">1</span>);
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> buttons = (e.ctrlKey ? <span class="number">1</span> : <span class="number">2</span>),  <span class="comment">// ? ctrl+left button : right button</span>
+                button = (e.ctrlKey ? <span class="number">0</span> : <span class="number">2</span>);   <span class="comment">// ? ctrl+left button : right button</span>
+            <span class="keyword">return</span> (e.type === <span class="string">'mousemove'</span> ? e.buttons &amp; buttons === <span class="number">0</span> : e.button !== button);
+        }
+    },
+
+    _drainInertiaBuffer: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">var</span> inertia = <span class="keyword">this</span>._inertia,
+            now = Date.now(),
+            cutoff = <span class="number">160</span>;   <span class="comment">//msec</span>
+
+        <span class="keyword">while</span> (inertia.length > <span class="number">0</span> &amp;&amp; now - inertia[<span class="number">0</span>][<span class="number">0</span>] > cutoff)
+            inertia.shift();
+    }
+
+};
+
+
+<span class="comment">/**
+ * Rotate start event. This event is emitted at the start of a user-initiated rotate interaction.
+ *
+ * @event rotatestart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Rotate event. This event is emitted repeatedly during a user-initiated rotate interaction.
+ *
+ * @event rotate
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Rotate end event. This event is emitted at the end of a user-initiated rotate interaction.
+ *
+ * @event rotateend
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+</code></pre>

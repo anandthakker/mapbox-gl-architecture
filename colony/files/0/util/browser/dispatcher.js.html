@@ -1,0 +1,44 @@
+<h1>dispatcher.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Actor = require(<span class="string">'../actor'</span>);
+<span class="keyword">var</span> WebWorkify = require(<span class="string">'webworkify'</span>);
+
+module.exports = Dispatcher;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Dispatcher</span><span class="params">(length, parent)</span> {</span>
+    <span class="keyword">this</span>.actors = [];
+    <span class="keyword">this</span>.currentActor = <span class="number">0</span>;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; length; i++) {
+        <span class="keyword">var</span> worker = <span class="keyword">new</span> WebWorkify(require(<span class="string">'../../source/worker'</span>));
+        <span class="keyword">var</span> actor = <span class="keyword">new</span> Actor(worker, parent);
+        actor.name = <span class="string">"Worker "</span> + i;
+        <span class="keyword">this</span>.actors.push(actor);
+    }
+}
+
+Dispatcher.prototype = {
+    broadcast: <span class="keyword">function</span>(type, data) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.actors.length; i++) {
+            <span class="keyword">this</span>.actors[i].send(type, data);
+        }
+    },
+
+    send: <span class="keyword">function</span>(type, data, callback, targetID, buffers) {
+        <span class="keyword">if</span> (<span class="keyword">typeof</span> targetID !== <span class="string">'number'</span> || isNaN(targetID)) {
+            <span class="comment">// Use round robin to send requests to web workers.</span>
+            targetID = <span class="keyword">this</span>.currentActor = (<span class="keyword">this</span>.currentActor + <span class="number">1</span>) % <span class="keyword">this</span>.actors.length;
+        }
+
+        <span class="keyword">this</span>.actors[targetID].send(type, data, callback, buffers);
+        <span class="keyword">return</span> targetID;
+    },
+
+    remove: <span class="keyword">function</span>() {
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.actors.length; i++) {
+            <span class="keyword">this</span>.actors[i].target.terminate();
+        }
+        <span class="keyword">this</span>.actors = [];
+    }
+};
+</code></pre>

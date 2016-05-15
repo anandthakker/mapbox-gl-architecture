@@ -1,0 +1,124 @@
+<h1>mapbox-gl-js-supported</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">if</span> (<span class="keyword">typeof</span> module !== <span class="string">'undefined'</span> &amp;&amp; module.exports) {
+    module.exports = isSupported;
+} <span class="keyword">else</span> <span class="keyword">if</span> (window) {
+    window.mapboxgl = window.mapboxgl || {};
+    window.mapboxgl.supported = isSupported;
+}
+
+<span class="comment">/**
+ * Test whether the current browser supports Mapbox GL JS
+ * @param {Object} options
+ * @param {boolean} [options.failIfMajorPerformanceCaveat=false] Return `false`
+ *   if the performance of Mapbox GL JS would be dramatically worse than
+ *   expected (i.e. a software renderer is would be used)
+ * @return {boolean}
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">isSupported</span><span class="params">(options)</span> {</span>
+    <span class="keyword">return</span> !!(
+        isBrowser() &amp;&amp;
+        isArraySupported() &amp;&amp;
+        isFunctionSupported() &amp;&amp;
+        isObjectSupported() &amp;&amp;
+        isJSONSupported() &amp;&amp;
+        isWorkerSupported() &amp;&amp;
+        isWebGLSupportedCached(options &amp;&amp; options.failIfMajorPerformanceCaveat)
+    );
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isBrowser</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">typeof</span> window !== <span class="string">'undefined'</span> &amp;&amp; <span class="keyword">typeof</span> document !== <span class="string">'undefined'</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isArraySupported</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> (
+        Array.prototype &amp;&amp;
+        Array.prototype.every &amp;&amp;
+        Array.prototype.filter &amp;&amp;
+        Array.prototype.forEach &amp;&amp;
+        Array.prototype.indexOf &amp;&amp;
+        Array.prototype.lastIndexOf &amp;&amp;
+        Array.prototype.map &amp;&amp;
+        Array.prototype.some &amp;&amp;
+        Array.prototype.reduce &amp;&amp;
+        Array.prototype.reduceRight &amp;&amp;
+        Array.isArray
+    );
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isFunctionSupported</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> Function.prototype &amp;&amp; Function.prototype.bind;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isObjectSupported</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> (
+        Object.keys &amp;&amp;
+        Object.create &amp;&amp;
+        Object.getPrototypeOf &amp;&amp;
+        Object.getOwnPropertyNames &amp;&amp;
+        Object.isSealed &amp;&amp;
+        Object.isFrozen &amp;&amp;
+        Object.isExtensible &amp;&amp;
+        Object.getOwnPropertyDescriptor &amp;&amp;
+        Object.defineProperty &amp;&amp;
+        Object.defineProperties &amp;&amp;
+        Object.seal &amp;&amp;
+        Object.freeze &amp;&amp;
+        Object.preventExtensions
+    );
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isJSONSupported</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> <span class="string">'JSON'</span> <span class="keyword">in</span> window &amp;&amp; <span class="string">'parse'</span> <span class="keyword">in</span> JSON &amp;&amp; <span class="string">'stringify'</span> <span class="keyword">in</span> JSON;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">isWorkerSupported</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> <span class="string">'Worker'</span> <span class="keyword">in</span> window;
+}
+
+<span class="keyword">var</span> isWebGLSupportedCache = {};
+<span class="function"><span class="keyword">function</span> <span class="title">isWebGLSupportedCached</span><span class="params">(failIfMajorPerformanceCaveat)</span> {</span>
+
+    <span class="keyword">if</span> (isWebGLSupportedCache[failIfMajorPerformanceCaveat] === <span class="literal">undefined</span>) {
+        isWebGLSupportedCache[failIfMajorPerformanceCaveat] = isWebGLSupported(failIfMajorPerformanceCaveat);
+    }
+
+    <span class="keyword">return</span> isWebGLSupportedCache[failIfMajorPerformanceCaveat];
+}
+
+isSupported.webGLContextAttributes = {
+    antialias: <span class="literal">false</span>,
+    alpha: <span class="literal">true</span>,
+    stencil: <span class="literal">true</span>,
+    depth: <span class="literal">true</span>
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">isWebGLSupported</span><span class="params">(failIfMajorPerformanceCaveat)</span> {</span>
+
+    <span class="keyword">var</span> canvas = document.createElement(<span class="string">'canvas'</span>);
+
+    <span class="keyword">var</span> attributes = Object.create(isSupported.webGLContextAttributes);
+    attributes.failIfMajorPerformanceCaveat = failIfMajorPerformanceCaveat;
+
+    <span class="keyword">if</span> (canvas.probablySupportsContext) {
+        <span class="keyword">return</span> (
+            canvas.probablySupportsContext(<span class="string">'webgl'</span>, attributes) ||
+            canvas.probablySupportsContext(<span class="string">'experimental-webgl'</span>, attributes)
+        );
+
+    } <span class="keyword">else</span> <span class="keyword">if</span> (canvas.supportsContext) {
+        <span class="keyword">return</span> (
+            canvas.supportsContext(<span class="string">'webgl'</span>, attributes) ||
+            canvas.supportsContext(<span class="string">'experimental-webgl'</span>, attributes)
+        );
+
+    } <span class="keyword">else</span> {
+        <span class="keyword">return</span> (
+            canvas.getContext(<span class="string">'webgl'</span>, attributes) ||
+            canvas.getContext(<span class="string">'experimental-webgl'</span>, attributes)
+        );
+    }
+}
+</code></pre>

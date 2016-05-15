@@ -1,0 +1,80 @@
+<h1>style_transition.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> interpolate = require(<span class="string">'../util/interpolate'</span>);
+
+module.exports = StyleTransition;
+
+<span class="comment">/*
+ * Represents a transition between two declarations
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">StyleTransition</span><span class="params">(declaration, oldTransition, value)</span> {</span>
+
+    <span class="keyword">this</span>.declaration = declaration;
+    <span class="keyword">this</span>.startTime = <span class="keyword">this</span>.endTime = (<span class="keyword">new</span> Date()).getTime();
+
+    <span class="keyword">var</span> type = declaration.type;
+    <span class="keyword">if</span> ((type === <span class="string">'string'</span> || type === <span class="string">'array'</span>) &amp;&amp; declaration.transitionable) {
+        <span class="keyword">this</span>.interp = interpZoomTransitioned;
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.interp = interpolate[type];
+    }
+
+    <span class="keyword">this</span>.oldTransition = oldTransition;
+    <span class="keyword">this</span>.duration = value.duration || <span class="number">0</span>;
+    <span class="keyword">this</span>.delay = value.delay || <span class="number">0</span>;
+
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.instant()) {
+        <span class="keyword">this</span>.endTime = <span class="keyword">this</span>.startTime + <span class="keyword">this</span>.duration + <span class="keyword">this</span>.delay;
+        <span class="keyword">this</span>.ease = util.easeCubicInOut;
+    }
+
+    <span class="keyword">if</span> (oldTransition &amp;&amp; oldTransition.endTime &lt;= <span class="keyword">this</span>.startTime) {
+        <span class="comment">// Old transition is done running, so we can</span>
+        <span class="comment">// delete its reference to its old transition.</span>
+
+        <span class="keyword">delete</span> oldTransition.oldTransition;
+    }
+}
+
+StyleTransition.prototype.instant = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> !<span class="keyword">this</span>.oldTransition || !<span class="keyword">this</span>.interp || (<span class="keyword">this</span>.duration === <span class="number">0</span> &amp;&amp; <span class="keyword">this</span>.delay === <span class="number">0</span>);
+};
+
+<span class="comment">/*
+ * Return the value of the transitioning property at zoom level `z` and optional time `t`
+ */</span>
+StyleTransition.prototype.calculate = <span class="keyword">function</span>(globalProperties, featureProperties) {
+    <span class="keyword">var</span> value = <span class="keyword">this</span>.declaration.calculate(
+        util.extend({}, globalProperties, {duration: <span class="keyword">this</span>.duration}),
+        featureProperties
+    );
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.instant()) <span class="keyword">return</span> value;
+
+    <span class="keyword">var</span> t = globalProperties.time || Date.now();
+
+    <span class="keyword">if</span> (t &lt; <span class="keyword">this</span>.endTime) {
+        <span class="keyword">var</span> oldValue = <span class="keyword">this</span>.oldTransition.calculate(
+            util.extend({}, globalProperties, {time: <span class="keyword">this</span>.startTime}),
+            featureProperties
+        );
+        <span class="keyword">var</span> eased = <span class="keyword">this</span>.ease((t - <span class="keyword">this</span>.startTime - <span class="keyword">this</span>.delay) / <span class="keyword">this</span>.duration);
+        value = <span class="keyword">this</span>.interp(oldValue, value, eased);
+    }
+
+    <span class="keyword">return</span> value;
+
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">interpZoomTransitioned</span><span class="params">(from, to, t)</span> {</span>
+    <span class="keyword">return</span> {
+        from: from.to,
+        fromScale: from.toScale,
+        to: to.to,
+        toScale: to.toScale,
+        t: t
+    };
+}
+</code></pre>

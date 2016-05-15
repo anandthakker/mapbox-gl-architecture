@@ -1,0 +1,19 @@
+<h1>token.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = resolveTokens;
+
+<span class="comment">/**
+ * Replace tokens in a string template with values in an object
+ *
+ * @param {Object} properties a key/value relationship between tokens and replacements
+ * @param {string} text the template string
+ * @returns {string} the template with tokens replaced
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">resolveTokens</span><span class="params">(properties, text)</span> {</span>
+    <span class="keyword">return</span> text.replace(<span class="regexp">/{([^{}()\[\]&lt;>$=:;.,^]+)}/g</span>, <span class="keyword">function</span>(match, key) {
+        <span class="keyword">return</span> key <span class="keyword">in</span> properties ? properties[key] : <span class="string">''</span>;
+    });
+}
+</code></pre>

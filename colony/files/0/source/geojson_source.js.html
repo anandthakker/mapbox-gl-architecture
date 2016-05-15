@@ -1,0 +1,234 @@
+<h1>geojson_source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> TilePyramid = require(<span class="string">'./tile_pyramid'</span>);
+<span class="keyword">var</span> Source = require(<span class="string">'./source'</span>);
+<span class="keyword">var</span> urlResolve = require(<span class="string">'resolve-url'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+
+module.exports = GeoJSONSource;
+
+<span class="comment">/**
+ * Create a GeoJSON data source instance given an options object
+ * @class GeoJSONSource
+ * @param {Object} [options]
+ * @param {Object|string} options.data A GeoJSON data object or URL to it. The latter is preferable in case of large GeoJSON files.
+ * @param {number} [options.maxzoom=18] Maximum zoom to preserve detail at.
+ * @param {number} [options.buffer] Tile buffer on each side in pixels.
+ * @param {number} [options.tolerance] Simplification tolerance (higher means simpler) in pixels.
+ * @param {number} [options.cluster] If the data is a collection of point features, setting this to true clusters the points by radius into groups.
+ * @param {number} [options.clusterRadius=50] Radius of each cluster when clustering points, in pixels.
+ * @param {number} [options.clusterMaxZoom] Max zoom to cluster points on. Defaults to one zoom less than `maxzoom` (so that last zoom features are not clustered).
+
+ * @example
+ * var sourceObj = new mapboxgl.GeoJSONSource({
+ *    data: {
+ *        "type": "FeatureCollection",
+ *        "features": [{
+ *            "type": "Feature",
+ *            "geometry": {
+ *                "type": "Point",
+ *                "coordinates": [
+ *                    -76.53063297271729,
+ *                    39.18174077994108
+ *                ]
+ *            }
+ *        }]
+ *    }
+ * });
+ * map.addSource('some id', sourceObj); // add
+ * map.removeSource('some id');  // remove
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">GeoJSONSource</span><span class="params">(options)</span> {</span>
+    options = options || {};
+
+    <span class="keyword">this</span>._data = options.data;
+
+    <span class="keyword">if</span> (options.maxzoom !== <span class="literal">undefined</span>) <span class="keyword">this</span>.maxzoom = options.maxzoom;
+
+    <span class="keyword">var</span> scale = EXTENT / <span class="keyword">this</span>.tileSize;
+
+    <span class="keyword">this</span>.geojsonVtOptions = {
+        buffer: (options.buffer !== <span class="literal">undefined</span> ? options.buffer : <span class="number">128</span>) * scale,
+        tolerance: (options.tolerance !== <span class="literal">undefined</span> ? options.tolerance : <span class="number">0.375</span>) * scale,
+        extent: EXTENT,
+        maxZoom: <span class="keyword">this</span>.maxzoom
+    };
+
+    <span class="keyword">this</span>.cluster = options.cluster || <span class="literal">false</span>;
+    <span class="keyword">this</span>.superclusterOptions = {
+        maxZoom: Math.min(options.clusterMaxZoom, <span class="keyword">this</span>.maxzoom - <span class="number">1</span>) || (<span class="keyword">this</span>.maxzoom - <span class="number">1</span>),
+        extent: EXTENT,
+        radius: (options.clusterRadius || <span class="number">50</span>) * scale,
+        log: <span class="literal">false</span>
+    };
+
+    <span class="keyword">this</span>._pyramid = <span class="keyword">new</span> TilePyramid({
+        tileSize: <span class="keyword">this</span>.tileSize,
+        minzoom: <span class="keyword">this</span>.minzoom,
+        maxzoom: <span class="keyword">this</span>.maxzoom,
+        reparseOverscaled: <span class="literal">true</span>,
+        load: <span class="keyword">this</span>._loadTile.bind(<span class="keyword">this</span>),
+        abort: <span class="keyword">this</span>._abortTile.bind(<span class="keyword">this</span>),
+        unload: <span class="keyword">this</span>._unloadTile.bind(<span class="keyword">this</span>),
+        add: <span class="keyword">this</span>._addTile.bind(<span class="keyword">this</span>),
+        remove: <span class="keyword">this</span>._removeTile.bind(<span class="keyword">this</span>),
+        redoPlacement: <span class="keyword">this</span>._redoTilePlacement.bind(<span class="keyword">this</span>)
+    });
+}
+
+GeoJSONSource.prototype = util.inherit(Evented, <span class="comment">/** @lends GeoJSONSource.prototype */</span>{
+    minzoom: <span class="number">0</span>,
+    maxzoom: <span class="number">18</span>,
+    tileSize: <span class="number">512</span>,
+    _dirty: <span class="literal">true</span>,
+    isTileClipped: <span class="literal">true</span>,
+
+    <span class="comment">/**
+     * Update source geojson data and rerender map
+     *
+     * @param {Object|string} data A GeoJSON data object or URL to it. The latter is preferable in case of large GeoJSON files.
+     * @returns {GeoJSONSource} this
+     */</span>
+    setData: <span class="keyword">function</span>(data) {
+        <span class="keyword">this</span>._data = data;
+        <span class="keyword">this</span>._dirty = <span class="literal">true</span>;
+
+        <span class="keyword">this</span>.fire(<span class="string">'change'</span>);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.map)
+            <span class="keyword">this</span>.update(<span class="keyword">this</span>.map.transform);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>.map = map;
+    },
+
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._loaded &amp;&amp; <span class="keyword">this</span>._pyramid.loaded();
+    },
+
+    update: <span class="keyword">function</span>(transform) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._dirty) {
+            <span class="keyword">this</span>._updateData();
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._loaded) {
+            <span class="keyword">this</span>._pyramid.update(<span class="keyword">this</span>.used, transform);
+        }
+    },
+
+    reload: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._loaded) {
+            <span class="keyword">this</span>._pyramid.reload();
+        }
+    },
+
+    serialize: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> {
+            type: <span class="string">'geojson'</span>,
+            data: <span class="keyword">this</span>._data
+        };
+    },
+
+    getVisibleCoordinates: Source._getVisibleCoordinates,
+    getTile: Source._getTile,
+
+    queryRenderedFeatures: Source._queryRenderedVectorFeatures,
+    querySourceFeatures: Source._querySourceFeatures,
+
+    _updateData: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._dirty = <span class="literal">false</span>;
+        <span class="keyword">var</span> options = {
+            tileSize: <span class="keyword">this</span>.tileSize,
+            source: <span class="keyword">this</span>.id,
+            geojsonVtOptions: <span class="keyword">this</span>.geojsonVtOptions,
+            cluster: <span class="keyword">this</span>.cluster,
+            superclusterOptions: <span class="keyword">this</span>.superclusterOptions
+        };
+
+        <span class="keyword">var</span> data = <span class="keyword">this</span>._data;
+        <span class="keyword">if</span> (<span class="keyword">typeof</span> data === <span class="string">'string'</span>) {
+            options.url = <span class="keyword">typeof</span> window != <span class="string">'undefined'</span> ? urlResolve(window.location.href, data) : data;
+        } <span class="keyword">else</span> {
+            options.data = JSON.stringify(data);
+        }
+        <span class="keyword">this</span>.workerID = <span class="keyword">this</span>.dispatcher.send(<span class="string">'parse geojson'</span>, options, <span class="keyword">function</span>(err) {
+            <span class="keyword">this</span>._loaded = <span class="literal">true</span>;
+            <span class="keyword">if</span> (err) {
+                <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {error: err});
+            } <span class="keyword">else</span> {
+                <span class="keyword">this</span>._pyramid.reload();
+                <span class="keyword">this</span>.fire(<span class="string">'change'</span>);
+            }
+
+        }.bind(<span class="keyword">this</span>));
+    },
+
+    _loadTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">var</span> overscaling = tile.coord.z > <span class="keyword">this</span>.maxzoom ? Math.pow(<span class="number">2</span>, tile.coord.z - <span class="keyword">this</span>.maxzoom) : <span class="number">1</span>;
+        <span class="keyword">var</span> params = {
+            uid: tile.uid,
+            coord: tile.coord,
+            zoom: tile.coord.z,
+            maxZoom: <span class="keyword">this</span>.maxzoom,
+            tileSize: <span class="keyword">this</span>.tileSize,
+            source: <span class="keyword">this</span>.id,
+            overscaling: overscaling,
+            angle: <span class="keyword">this</span>.map.transform.angle,
+            pitch: <span class="keyword">this</span>.map.transform.pitch,
+            showCollisionBoxes: <span class="keyword">this</span>.map.showCollisionBoxes
+        };
+
+        tile.workerID = <span class="keyword">this</span>.dispatcher.send(<span class="string">'load geojson tile'</span>, params, <span class="keyword">function</span>(err, data) {
+
+            tile.unloadVectorData(<span class="keyword">this</span>.map.painter);
+
+            <span class="keyword">if</span> (tile.aborted)
+                <span class="keyword">return</span>;
+
+            <span class="keyword">if</span> (err) {
+                <span class="keyword">this</span>.fire(<span class="string">'tile.error'</span>, {tile: tile});
+                <span class="keyword">return</span>;
+            }
+
+            tile.loadVectorData(data, <span class="keyword">this</span>.map.style);
+
+            <span class="keyword">if</span> (tile.redoWhenDone) {
+                tile.redoWhenDone = <span class="literal">false</span>;
+                tile.redoPlacement(<span class="keyword">this</span>);
+            }
+
+            <span class="keyword">this</span>.fire(<span class="string">'tile.load'</span>, {tile: tile});
+
+        }.bind(<span class="keyword">this</span>), <span class="keyword">this</span>.workerID);
+    },
+
+    _abortTile: <span class="keyword">function</span>(tile) {
+        tile.aborted = <span class="literal">true</span>;
+    },
+
+    _addTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.add'</span>, {tile: tile});
+    },
+
+    _removeTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.remove'</span>, {tile: tile});
+    },
+
+    _unloadTile: <span class="keyword">function</span>(tile) {
+        tile.unloadVectorData(<span class="keyword">this</span>.map.painter);
+        <span class="keyword">this</span>.dispatcher.send(<span class="string">'remove tile'</span>, { uid: tile.uid, source: <span class="keyword">this</span>.id }, <span class="literal">null</span>, tile.workerID);
+    },
+
+    redoPlacement: Source.redoPlacement,
+
+    _redoTilePlacement: <span class="keyword">function</span>(tile) {
+        tile.redoPlacement(<span class="keyword">this</span>);
+    }
+});
+</code></pre>

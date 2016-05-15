@@ -1,0 +1,72 @@
+<h1>frame_history.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = FrameHistory;
+
+<span class="function"><span class="keyword">function</span> <span class="title">FrameHistory</span><span class="params">()</span> {</span>
+    <span class="keyword">this</span>.changeTimes = <span class="keyword">new</span> Float64Array(<span class="number">256</span>);
+    <span class="keyword">this</span>.changeOpacities = <span class="keyword">new</span> Uint8Array(<span class="number">256</span>);
+    <span class="keyword">this</span>.opacities = <span class="keyword">new</span> Uint8ClampedArray(<span class="number">256</span>);
+    <span class="keyword">this</span>.array = <span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.opacities.buffer);
+
+    <span class="keyword">this</span>.fadeDuration = <span class="number">300</span>;
+    <span class="keyword">this</span>.previousZoom = <span class="number">0</span>;
+    <span class="keyword">this</span>.firstFrame = <span class="literal">true</span>;
+}
+
+FrameHistory.prototype.record = <span class="keyword">function</span>(zoom) {
+    <span class="keyword">var</span> now = Date.now();
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.firstFrame) {
+        now = <span class="number">0</span>;
+        <span class="keyword">this</span>.firstFrame = <span class="literal">false</span>;
+    }
+
+    zoom = Math.floor(zoom * <span class="number">10</span>);
+
+    <span class="keyword">var</span> z;
+    <span class="keyword">if</span> (zoom &lt; <span class="keyword">this</span>.previousZoom) {
+        <span class="keyword">for</span> (z = zoom + <span class="number">1</span>; z &lt;= <span class="keyword">this</span>.previousZoom; z++) {
+            <span class="keyword">this</span>.changeTimes[z] = now;
+            <span class="keyword">this</span>.changeOpacities[z] = <span class="keyword">this</span>.opacities[z];
+        }
+    } <span class="keyword">else</span> {
+        <span class="keyword">for</span> (z = zoom; z > <span class="keyword">this</span>.previousZoom; z--) {
+            <span class="keyword">this</span>.changeTimes[z] = now;
+            <span class="keyword">this</span>.changeOpacities[z] = <span class="keyword">this</span>.opacities[z];
+        }
+    }
+
+    <span class="keyword">for</span> (z = <span class="number">0</span>; z &lt; <span class="number">256</span>; z++) {
+        <span class="keyword">var</span> timeSince = now - <span class="keyword">this</span>.changeTimes[z];
+        <span class="keyword">var</span> opacityChange = timeSince / <span class="keyword">this</span>.fadeDuration * <span class="number">255</span>;
+        <span class="keyword">if</span> (z &lt;= zoom) {
+            <span class="keyword">this</span>.opacities[z] = <span class="keyword">this</span>.changeOpacities[z] + opacityChange;
+        } <span class="keyword">else</span> {
+            <span class="keyword">this</span>.opacities[z] = <span class="keyword">this</span>.changeOpacities[z] - opacityChange;
+        }
+    }
+
+    <span class="keyword">this</span>.changed = <span class="literal">true</span>;
+    <span class="keyword">this</span>.previousZoom = zoom;
+};
+
+FrameHistory.prototype.bind = <span class="keyword">function</span>(gl) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.texture) {
+        <span class="keyword">this</span>.texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texImage2D(gl.TEXTURE_2D, <span class="number">0</span>, gl.ALPHA, <span class="number">256</span>, <span class="number">1</span>, <span class="number">0</span>, gl.ALPHA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.array);
+
+    } <span class="keyword">else</span> {
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+        <span class="keyword">if</span> (<span class="keyword">this</span>.changed) {
+            gl.texSubImage2D(gl.TEXTURE_2D, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">256</span>, <span class="number">1</span>, gl.ALPHA, gl.UNSIGNED_BYTE, <span class="keyword">this</span>.array);
+            <span class="keyword">this</span>.changed = <span class="literal">false</span>;
+        }
+    }
+};
+</code></pre>

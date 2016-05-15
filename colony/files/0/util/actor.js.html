@@ -1,0 +1,65 @@
+<h1>actor.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Actor;
+
+<span class="comment">/**
+ * An implementation of the [Actor design pattern](http://en.wikipedia.org/wiki/Actor_model)
+ * that maintains the relationship between asynchronous tasks and the objects
+ * that spin them off - in this case, tasks like parsing parts of styles,
+ * owned by the styles
+ *
+ * @param {WebWorker} target
+ * @param {WebWorker} parent
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Actor</span><span class="params">(target, parent)</span> {</span>
+    <span class="keyword">this</span>.target = target;
+    <span class="keyword">this</span>.parent = parent;
+    <span class="keyword">this</span>.callbacks = {};
+    <span class="keyword">this</span>.callbackID = <span class="number">0</span>;
+    <span class="keyword">this</span>.receive = <span class="keyword">this</span>.receive.bind(<span class="keyword">this</span>);
+    <span class="keyword">this</span>.target.addEventListener(<span class="string">'message'</span>, <span class="keyword">this</span>.receive, <span class="literal">false</span>);
+}
+
+Actor.prototype.receive = <span class="keyword">function</span>(message) {
+    <span class="keyword">var</span> data = message.data,
+        callback;
+
+    <span class="keyword">if</span> (data.type === <span class="string">'&lt;response>'</span>) {
+        callback = <span class="keyword">this</span>.callbacks[data.id];
+        <span class="keyword">delete</span> <span class="keyword">this</span>.callbacks[data.id];
+        callback(data.error || <span class="literal">null</span>, data.data);
+    } <span class="keyword">else</span> <span class="keyword">if</span> (<span class="keyword">typeof</span> data.id !== <span class="string">'undefined'</span>) {
+        <span class="keyword">var</span> id = data.id;
+        <span class="keyword">this</span>.parent[data.type](data.data, <span class="keyword">function</span>(err, data, buffers) {
+            <span class="keyword">this</span>.postMessage({
+                type: <span class="string">'&lt;response>'</span>,
+                id: String(id),
+                error: err ? String(err) : <span class="literal">null</span>,
+                data: data
+            }, buffers);
+        }.bind(<span class="keyword">this</span>));
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.parent[data.type](data.data);
+    }
+};
+
+Actor.prototype.send = <span class="keyword">function</span>(type, data, callback, buffers) {
+    <span class="keyword">var</span> id = <span class="literal">null</span>;
+    <span class="keyword">if</span> (callback) <span class="keyword">this</span>.callbacks[id = <span class="keyword">this</span>.callbackID++] = callback;
+    <span class="keyword">this</span>.postMessage({ type: type, id: String(id), data: data }, buffers);
+};
+
+<span class="comment">/**
+ * Wrapped postMessage API that abstracts around IE's lack of
+ * `transferList` support.
+ *
+ * @param {Object} message
+ * @param {Object} transferList
+ * @private
+ */</span>
+Actor.prototype.postMessage = <span class="keyword">function</span>(message, transferList) {
+    <span class="keyword">this</span>.target.postMessage(message, transferList);
+};
+</code></pre>

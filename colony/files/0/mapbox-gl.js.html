@@ -1,0 +1,48 @@
+<h1>mapbox-gl.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="comment">/**
+ * mapboxgl is a A WebGL JavaScript interactive maps library that can render
+ * [Mapbox vector tiles](https://www.mapbox.com/blog/vector-tiles/).
+ *
+ * @module mapboxgl
+ * @summary WebGL JavaScript map library
+ */</span>
+
+<span class="comment">// jshint -W079</span>
+<span class="keyword">var</span> mapboxgl = module.exports = {};
+
+mapboxgl.Map = require(<span class="string">'./ui/map'</span>);
+mapboxgl.Control = require(<span class="string">'./ui/control/control'</span>);
+mapboxgl.Navigation = require(<span class="string">'./ui/control/navigation'</span>);
+mapboxgl.Geolocate = require(<span class="string">'./ui/control/geolocate'</span>);
+mapboxgl.Attribution = require(<span class="string">'./ui/control/attribution'</span>);
+mapboxgl.Popup = require(<span class="string">'./ui/popup'</span>);
+
+mapboxgl.GeoJSONSource = require(<span class="string">'./source/geojson_source'</span>);
+mapboxgl.VideoSource = require(<span class="string">'./source/video_source'</span>);
+mapboxgl.ImageSource = require(<span class="string">'./source/image_source'</span>);
+
+mapboxgl.Style = require(<span class="string">'./style/style'</span>);
+
+mapboxgl.LngLat = require(<span class="string">'./geo/lng_lat'</span>);
+mapboxgl.LngLatBounds = require(<span class="string">'./geo/lng_lat_bounds'</span>);
+mapboxgl.Point = require(<span class="string">'point-geometry'</span>);
+
+mapboxgl.Evented = require(<span class="string">'./util/evented'</span>);
+mapboxgl.util = require(<span class="string">'./util/util'</span>);
+
+mapboxgl.supported = require(<span class="string">'./util/browser'</span>).supported;
+
+<span class="keyword">var</span> ajax = require(<span class="string">'./util/ajax'</span>);
+mapboxgl.util.getJSON = ajax.getJSON;
+mapboxgl.util.getArrayBuffer = ajax.getArrayBuffer;
+
+<span class="keyword">var</span> config = require(<span class="string">'./util/config'</span>);
+mapboxgl.config = config;
+
+Object.defineProperty(mapboxgl, <span class="string">'accessToken'</span>, {
+    get: <span class="keyword">function</span>() { <span class="keyword">return</span> config.ACCESS_TOKEN; },
+    set: <span class="keyword">function</span>(token) { config.ACCESS_TOKEN = token; }
+});
+</code></pre>

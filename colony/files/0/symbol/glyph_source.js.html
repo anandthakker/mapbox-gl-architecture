@@ -1,0 +1,142 @@
+<h1>glyph_source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeGlyphsURL;
+<span class="keyword">var</span> getArrayBuffer = require(<span class="string">'../util/ajax'</span>).getArrayBuffer;
+<span class="keyword">var</span> Glyphs = require(<span class="string">'../util/glyphs'</span>);
+<span class="keyword">var</span> GlyphAtlas = require(<span class="string">'../symbol/glyph_atlas'</span>);
+<span class="keyword">var</span> Protobuf = require(<span class="string">'pbf'</span>);
+
+module.exports = GlyphSource;
+
+<span class="comment">/**
+ * A glyph source has a URL from which to load new glyphs and manages
+ * GlyphAtlases in which to store glyphs used by the requested fontstacks
+ * and ranges.
+ *
+ * @param {string} url glyph template url
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">GlyphSource</span><span class="params">(url)</span> {</span>
+    <span class="keyword">this</span>.url = url &amp;&amp; normalizeURL(url);
+    <span class="keyword">this</span>.atlases = {};
+    <span class="keyword">this</span>.stacks = {};
+    <span class="keyword">this</span>.loading = {};
+}
+
+GlyphSource.prototype.getSimpleGlyphs = <span class="keyword">function</span>(fontstack, glyphIDs, uid, callback) {
+    <span class="keyword">if</span> (<span class="keyword">this</span>.stacks[fontstack] === <span class="literal">undefined</span>) {
+        <span class="keyword">this</span>.stacks[fontstack] = {};
+    }
+    <span class="keyword">if</span> (<span class="keyword">this</span>.atlases[fontstack] === <span class="literal">undefined</span>) {
+        <span class="keyword">this</span>.atlases[fontstack] = <span class="keyword">new</span> GlyphAtlas(<span class="number">128</span>, <span class="number">128</span>);
+    }
+
+    <span class="keyword">var</span> glyphs = {};
+    <span class="keyword">var</span> stack = <span class="keyword">this</span>.stacks[fontstack];
+    <span class="keyword">var</span> atlas = <span class="keyword">this</span>.atlases[fontstack];
+
+    <span class="comment">// the number of pixels the sdf bitmaps are padded by</span>
+    <span class="keyword">var</span> buffer = <span class="number">3</span>;
+
+    <span class="keyword">var</span> missing = {};
+    <span class="keyword">var</span> remaining = <span class="number">0</span>;
+    <span class="keyword">var</span> range;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; glyphIDs.length; i++) {
+        <span class="keyword">var</span> glyphID = glyphIDs[i];
+        range = Math.floor(glyphID / <span class="number">256</span>);
+
+        <span class="keyword">if</span> (stack[range]) {
+            <span class="keyword">var</span> glyph = stack[range].glyphs[glyphID];
+            <span class="keyword">var</span> rect  = atlas.addGlyph(uid, fontstack, glyph, buffer);
+            <span class="keyword">if</span> (glyph) glyphs[glyphID] = <span class="keyword">new</span> SimpleGlyph(glyph, rect, buffer);
+        } <span class="keyword">else</span> {
+            <span class="keyword">if</span> (missing[range] === <span class="literal">undefined</span>) {
+                missing[range] = [];
+                remaining++;
+            }
+            missing[range].push(glyphID);
+        }
+    }
+
+    <span class="keyword">if</span> (!remaining) callback(<span class="literal">undefined</span>, glyphs, fontstack);
+
+    <span class="keyword">var</span> onRangeLoaded = <span class="keyword">function</span>(err, range, data) {
+        <span class="comment">// TODO not be silent about errors</span>
+        <span class="keyword">if</span> (!err) {
+            <span class="keyword">var</span> stack = <span class="keyword">this</span>.stacks[fontstack][range] = data.stacks[<span class="number">0</span>];
+            <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; missing[range].length; i++) {
+                <span class="keyword">var</span> glyphID = missing[range][i];
+                <span class="keyword">var</span> glyph = stack.glyphs[glyphID];
+                <span class="keyword">var</span> rect  = atlas.addGlyph(uid, fontstack, glyph, buffer);
+                <span class="keyword">if</span> (glyph) glyphs[glyphID] = <span class="keyword">new</span> SimpleGlyph(glyph, rect, buffer);
+            }
+        }
+        remaining--;
+        <span class="keyword">if</span> (!remaining) callback(<span class="literal">undefined</span>, glyphs, fontstack);
+    }.bind(<span class="keyword">this</span>);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> r <span class="keyword">in</span> missing) {
+        <span class="keyword">this</span>.loadRange(fontstack, r, onRangeLoaded);
+    }
+};
+
+<span class="comment">// A simplified representation of the glyph containing only the properties needed for shaping.</span>
+<span class="function"><span class="keyword">function</span> <span class="title">SimpleGlyph</span><span class="params">(glyph, rect, buffer)</span> {</span>
+    <span class="keyword">var</span> padding = <span class="number">1</span>;
+    <span class="keyword">this</span>.advance = glyph.advance;
+    <span class="keyword">this</span>.left = glyph.left - buffer - padding;
+    <span class="keyword">this</span>.top = glyph.top + buffer + padding;
+    <span class="keyword">this</span>.rect = rect;
+}
+
+GlyphSource.prototype.loadRange = <span class="keyword">function</span>(fontstack, range, callback) {
+    <span class="keyword">if</span> (range * <span class="number">256</span> > <span class="number">65535</span>) <span class="keyword">return</span> callback(<span class="string">'glyphs > 65535 not supported'</span>);
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.loading[fontstack] === <span class="literal">undefined</span>) {
+        <span class="keyword">this</span>.loading[fontstack] = {};
+    }
+    <span class="keyword">var</span> loading = <span class="keyword">this</span>.loading[fontstack];
+
+    <span class="keyword">if</span> (loading[range]) {
+        loading[range].push(callback);
+    } <span class="keyword">else</span> {
+        loading[range] = [callback];
+
+        <span class="keyword">var</span> rangeName = (range * <span class="number">256</span>) + <span class="string">'-'</span> + (range * <span class="number">256</span> + <span class="number">255</span>);
+        <span class="keyword">var</span> url = glyphUrl(fontstack, rangeName, <span class="keyword">this</span>.url);
+
+        getArrayBuffer(url, <span class="keyword">function</span>(err, data) {
+            <span class="keyword">var</span> glyphs = !err &amp;&amp; <span class="keyword">new</span> Glyphs(<span class="keyword">new</span> Protobuf(<span class="keyword">new</span> Uint8Array(data)));
+            <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; loading[range].length; i++) {
+                loading[range][i](err, range, glyphs);
+            }
+            <span class="keyword">delete</span> loading[range];
+        });
+    }
+};
+
+GlyphSource.prototype.getGlyphAtlas = <span class="keyword">function</span>(fontstack) {
+    <span class="keyword">return</span> <span class="keyword">this</span>.atlases[fontstack];
+};
+
+<span class="comment">/**
+ * Use CNAME sharding to load a specific glyph range over a randomized
+ * but consistent subdomain.
+ * @param {string} fontstack comma-joined fonts
+ * @param {string} range comma-joined range
+ * @param {url} url templated url
+ * @param {string} [subdomains=abc] subdomains as a string where each letter is one.
+ * @returns {string} a url to load that section of glyphs
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">glyphUrl</span><span class="params">(fontstack, range, url, subdomains)</span> {</span>
+    subdomains = subdomains || <span class="string">'abc'</span>;
+
+    <span class="keyword">return</span> url
+        .replace(<span class="string">'{s}'</span>, subdomains[fontstack.length % subdomains.length])
+        .replace(<span class="string">'{fontstack}'</span>, fontstack)
+        .replace(<span class="string">'{range}'</span>, range);
+}
+</code></pre>

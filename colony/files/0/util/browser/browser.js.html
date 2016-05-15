@@ -1,0 +1,93 @@
+<h1>util/browser/browser.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="comment">/**
+ * Unlike js/util/browser.js, this code is written with the expectation
+ * of a browser environment with a global 'window' object
+ * @module browser
+ * @private
+ */</span>
+
+<span class="comment">/**
+ * Provides a function that outputs milliseconds: either performance.now()
+ * or a fallback to Date.now()
+ */</span>
+module.exports.now = (<span class="keyword">function</span>() {
+    <span class="keyword">if</span> (window.performance &amp;&amp;
+        window.performance.now) {
+        <span class="keyword">return</span> window.performance.now.bind(window.performance);
+    } <span class="keyword">else</span> {
+        <span class="keyword">return</span> Date.now.bind(Date);
+    }
+}());
+
+<span class="keyword">var</span> frame = window.requestAnimationFrame ||
+    window.mozRequestAnimationFrame ||
+    window.webkitRequestAnimationFrame ||
+    window.msRequestAnimationFrame;
+
+exports.frame = <span class="keyword">function</span>(fn) {
+    <span class="keyword">return</span> frame(fn);
+};
+
+<span class="keyword">var</span> cancel = window.cancelAnimationFrame ||
+    window.mozCancelAnimationFrame ||
+    window.webkitCancelAnimationFrame ||
+    window.msCancelAnimationFrame;
+
+exports.cancelFrame = <span class="keyword">function</span>(id) {
+    cancel(id);
+};
+
+exports.timed = <span class="function"><span class="keyword">function</span> <span class="params">(fn, dur, ctx)</span> {</span>
+    <span class="keyword">if</span> (!dur) {
+        fn.call(ctx, <span class="number">1</span>);
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> abort = <span class="literal">false</span>,
+        start = module.exports.now();
+
+    <span class="function"><span class="keyword">function</span> <span class="title">tick</span><span class="params">(now)</span> {</span>
+        <span class="keyword">if</span> (abort) <span class="keyword">return</span>;
+        now = module.exports.now();
+
+        <span class="keyword">if</span> (now >= start + dur) {
+            fn.call(ctx, <span class="number">1</span>);
+        } <span class="keyword">else</span> {
+            fn.call(ctx, (now - start) / dur);
+            exports.frame(tick);
+        }
+    }
+
+    exports.frame(tick);
+
+    <span class="keyword">return</span> <span class="keyword">function</span>() { abort = <span class="literal">true</span>; };
+};
+
+<span class="comment">/**
+ * Test if the current browser supports Mapbox GL JS
+ * @param {Object} options
+ * @param {boolean} [options.failIfMajorPerformanceCaveat=false] Return `false`
+ *   if the performance of Mapbox GL JS would be dramatically worse than
+ *   expected (i.e. a software renderer would be used)
+ * @return {boolean}
+ */</span>
+exports.supported = require(<span class="string">'mapbox-gl-js-supported'</span>);
+
+exports.hardwareConcurrency = navigator.hardwareConcurrency || <span class="number">8</span>;
+
+Object.defineProperty(exports, <span class="string">'devicePixelRatio'</span>, {
+    get: <span class="keyword">function</span>() { <span class="keyword">return</span> window.devicePixelRatio; }
+});
+
+exports.supportsWebp = <span class="literal">false</span>;
+
+<span class="keyword">var</span> webpImgTest = document.createElement(<span class="string">'img'</span>);
+webpImgTest.onload = <span class="keyword">function</span>() {
+    exports.supportsWebp = <span class="literal">true</span>;
+};
+webpImgTest.src = <span class="string">'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAQAAAAfQ//73v/+BiOh/AAA='</span>;
+
+exports.supportsGeolocation = !!navigator.geolocation;
+</code></pre>

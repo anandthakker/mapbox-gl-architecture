@@ -1,0 +1,165 @@
+<h1>pngjs</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'util'</span>);
+<span class="keyword">var</span> Stream = require(<span class="string">'stream'</span>);
+<span class="keyword">var</span> Parser = require(<span class="string">'./parser-async'</span>);
+<span class="keyword">var</span> Packer = require(<span class="string">'./packer-async'</span>);
+<span class="keyword">var</span> PNGSync = require(<span class="string">'./png-sync'</span>);
+
+
+<span class="keyword">var</span> PNG = exports.PNG = <span class="keyword">function</span>(options) {
+  Stream.call(<span class="keyword">this</span>);
+
+  options = options || {}; <span class="comment">// eslint-disable-line no-param-reassign</span>
+
+  <span class="keyword">this</span>.width = options.width || <span class="number">0</span>;
+  <span class="keyword">this</span>.height = options.height || <span class="number">0</span>;
+
+  <span class="keyword">this</span>.data = <span class="keyword">this</span>.width > <span class="number">0</span> &amp;&amp; <span class="keyword">this</span>.height > <span class="number">0</span> ?
+    <span class="keyword">new</span> Buffer(<span class="number">4</span> * <span class="keyword">this</span>.width * <span class="keyword">this</span>.height) : <span class="literal">null</span>;
+
+  <span class="keyword">if</span> (options.fill &amp;&amp; <span class="keyword">this</span>.data) {
+    <span class="keyword">this</span>.data.fill(<span class="number">0</span>);
+  }
+
+  <span class="keyword">this</span>.gamma = <span class="number">0</span>;
+  <span class="keyword">this</span>.readable = <span class="keyword">this</span>.writable = <span class="literal">true</span>;
+
+  <span class="keyword">this</span>._parser = <span class="keyword">new</span> Parser(options);
+
+  <span class="keyword">this</span>._parser.on(<span class="string">'error'</span>, <span class="keyword">this</span>.emit.bind(<span class="keyword">this</span>, <span class="string">'error'</span>));
+  <span class="keyword">this</span>._parser.on(<span class="string">'close'</span>, <span class="keyword">this</span>._handleClose.bind(<span class="keyword">this</span>));
+  <span class="keyword">this</span>._parser.on(<span class="string">'metadata'</span>, <span class="keyword">this</span>._metadata.bind(<span class="keyword">this</span>));
+  <span class="keyword">this</span>._parser.on(<span class="string">'gamma'</span>, <span class="keyword">this</span>._gamma.bind(<span class="keyword">this</span>));
+  <span class="keyword">this</span>._parser.on(<span class="string">'parsed'</span>, <span class="keyword">function</span>(data) {
+    <span class="keyword">this</span>.data = data;
+    <span class="keyword">this</span>.emit(<span class="string">'parsed'</span>, data);
+  }.bind(<span class="keyword">this</span>));
+
+  <span class="keyword">this</span>._packer = <span class="keyword">new</span> Packer(options);
+  <span class="keyword">this</span>._packer.on(<span class="string">'data'</span>, <span class="keyword">this</span>.emit.bind(<span class="keyword">this</span>, <span class="string">'data'</span>));
+  <span class="keyword">this</span>._packer.on(<span class="string">'end'</span>, <span class="keyword">this</span>.emit.bind(<span class="keyword">this</span>, <span class="string">'end'</span>));
+  <span class="keyword">this</span>._parser.on(<span class="string">'close'</span>, <span class="keyword">this</span>._handleClose.bind(<span class="keyword">this</span>));
+  <span class="keyword">this</span>._packer.on(<span class="string">'error'</span>, <span class="keyword">this</span>.emit.bind(<span class="keyword">this</span>, <span class="string">'error'</span>));
+
+};
+util.inherits(PNG, Stream);
+
+PNG.sync = PNGSync;
+
+PNG.prototype.pack = <span class="keyword">function</span>() {
+
+  <span class="keyword">if</span> (!<span class="keyword">this</span>.data || !<span class="keyword">this</span>.data.length) {
+    <span class="keyword">this</span>.emit(<span class="string">'error'</span>, <span class="string">'No data provided'</span>);
+    <span class="keyword">return</span> <span class="keyword">this</span>;
+  }
+
+  process.nextTick(<span class="keyword">function</span>() {
+    <span class="keyword">this</span>._packer.pack(<span class="keyword">this</span>.data, <span class="keyword">this</span>.width, <span class="keyword">this</span>.height, <span class="keyword">this</span>.gamma);
+  }.bind(<span class="keyword">this</span>));
+
+  <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+
+
+PNG.prototype.parse = <span class="keyword">function</span>(data, callback) {
+
+  <span class="keyword">if</span> (callback) {
+    <span class="keyword">var</span> onParsed, onError;
+
+    onParsed = <span class="keyword">function</span>(parsedData) {
+      <span class="keyword">this</span>.removeListener(<span class="string">'error'</span>, onError);
+
+      <span class="keyword">this</span>.data = parsedData;
+      callback(<span class="literal">null</span>, <span class="keyword">this</span>);
+    }.bind(<span class="keyword">this</span>);
+
+    onError = <span class="keyword">function</span>(err) {
+      <span class="keyword">this</span>.removeListener(<span class="string">'parsed'</span>, onParsed);
+
+      callback(err, <span class="literal">null</span>);
+    }.bind(<span class="keyword">this</span>);
+
+    <span class="keyword">this</span>.once(<span class="string">'parsed'</span>, onParsed);
+    <span class="keyword">this</span>.once(<span class="string">'error'</span>, onError);
+  }
+
+  <span class="keyword">this</span>.end(data);
+  <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+
+PNG.prototype.write = <span class="keyword">function</span>(data) {
+  <span class="keyword">this</span>._parser.write(data);
+  <span class="keyword">return</span> <span class="literal">true</span>;
+};
+
+PNG.prototype.end = <span class="keyword">function</span>(data) {
+  <span class="keyword">this</span>._parser.end(data);
+};
+
+PNG.prototype._metadata = <span class="keyword">function</span>(metadata) {
+  <span class="keyword">this</span>.width = metadata.width;
+  <span class="keyword">this</span>.height = metadata.height;
+
+  <span class="keyword">this</span>.emit(<span class="string">'metadata'</span>, metadata);
+};
+
+PNG.prototype._gamma = <span class="keyword">function</span>(gamma) {
+  <span class="keyword">this</span>.gamma = gamma;
+};
+
+PNG.prototype._handleClose = <span class="keyword">function</span>() {
+  <span class="keyword">if</span> (!<span class="keyword">this</span>._parser.writable &amp;&amp; !<span class="keyword">this</span>._packer.readable) {
+    <span class="keyword">this</span>.emit(<span class="string">'close'</span>);
+  }
+};
+
+
+PNG.bitblt = <span class="keyword">function</span>(src, dst, srcX, srcY, width, height, deltaX, deltaY) { <span class="comment">// eslint-disable-line max-params</span>
+
+  <span class="keyword">if</span> (srcX > src.width || srcY > src.height || srcX + width > src.width || srcY + height > src.height) {
+    <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'bitblt reading outside image'</span>);
+  }
+
+  <span class="keyword">if</span> (deltaX > dst.width || deltaY > dst.height || deltaX + width > dst.width || deltaY + height > dst.height) {
+    <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'bitblt writing outside image'</span>);
+  }
+
+  <span class="keyword">for</span> (<span class="keyword">var</span> y = <span class="number">0</span>; y &lt; height; y++) {
+    src.data.copy(dst.data,
+      ((deltaY + y) * dst.width + deltaX) &lt;&lt; <span class="number">2</span>,
+      ((srcY + y) * src.width + srcX) &lt;&lt; <span class="number">2</span>,
+      ((srcY + y) * src.width + srcX + width) &lt;&lt; <span class="number">2</span>
+    );
+  }
+};
+
+
+PNG.prototype.bitblt = <span class="keyword">function</span>(dst, srcX, srcY, width, height, deltaX, deltaY) { <span class="comment">// eslint-disable-line max-params</span>
+
+  PNG.bitblt(<span class="keyword">this</span>, dst, srcX, srcY, width, height, deltaX, deltaY);
+  <span class="keyword">return</span> <span class="keyword">this</span>;
+};
+
+PNG.adjustGamma = <span class="keyword">function</span>(src) {
+  <span class="keyword">if</span> (src.gamma) {
+    <span class="keyword">for</span> (<span class="keyword">var</span> y = <span class="number">0</span>; y &lt; src.height; y++) {
+      <span class="keyword">for</span> (<span class="keyword">var</span> x = <span class="number">0</span>; x &lt; src.width; x++) {
+        <span class="keyword">var</span> idx = (src.width * y + x) &lt;&lt; <span class="number">2</span>;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="number">3</span>; i++) {
+          <span class="keyword">var</span> sample = src.data[idx + i] / <span class="number">255</span>;
+          sample = Math.pow(sample, <span class="number">1</span> / <span class="number">2.2</span> / src.gamma);
+          src.data[idx + i] = Math.round(sample * <span class="number">255</span>);
+        }
+      }
+    }
+    src.gamma = <span class="number">0</span>;
+  }
+};
+
+PNG.prototype.adjustGamma = <span class="keyword">function</span>() {
+  PNG.adjustGamma(<span class="keyword">this</span>);
+};
+</code></pre>

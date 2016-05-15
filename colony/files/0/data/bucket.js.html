@@ -1,0 +1,434 @@
+<h1>bucket.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> featureFilter = require(<span class="string">'feature-filter'</span>);
+<span class="keyword">var</span> Buffer = require(<span class="string">'./buffer'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> StructArrayType = require(<span class="string">'../util/struct_array'</span>);
+<span class="keyword">var</span> VertexArrayObject = require(<span class="string">'../render/vertex_array_object'</span>);
+
+module.exports = Bucket;
+
+<span class="comment">/**
+ * Instantiate the appropriate subclass of `Bucket` for `options`.
+ * @private
+ * @param options See `Bucket` constructor options
+ * @returns {Bucket}
+ */</span>
+Bucket.create = <span class="keyword">function</span>(options) {
+    <span class="keyword">var</span> Classes = {
+        fill: require(<span class="string">'./bucket/fill_bucket'</span>),
+        line: require(<span class="string">'./bucket/line_bucket'</span>),
+        circle: require(<span class="string">'./bucket/circle_bucket'</span>),
+        symbol: require(<span class="string">'./bucket/symbol_bucket'</span>)
+    };
+    <span class="keyword">return</span> <span class="keyword">new</span> Classes[options.layer.type](options);
+};
+
+
+<span class="comment">/**
+ * The maximum extent of a feature that can be safely stored in the buffer.
+ * In practice, all features are converted to this extent before being added.
+ *
+ * Positions are stored as signed 16bit integers.
+ * One bit is lost for signedness to support featuers extending past the left edge of the tile.
+ * One bit is lost because the line vertex buffer packs 1 bit of other data into the int.
+ * One bit is lost to support features extending past the extent on the right edge of the tile.
+ * This leaves us with 2^13 = 8192
+ *
+ * @private
+ * @readonly
+ */</span>
+Bucket.EXTENT = <span class="number">8192</span>;
+
+<span class="comment">/**
+ * The `Bucket` class is the single point of knowledge about turning vector
+ * tiles into WebGL buffers.
+ *
+ * `Bucket` is an abstract class. A subclass exists for each Mapbox GL
+ * style spec layer type. Because `Bucket` is an abstract class,
+ * instances should be created via the `Bucket.create` method.
+ *
+ * @class Bucket
+ * @private
+ * @param options
+ * @param {number} options.zoom Zoom level of the buffers being built. May be
+ *     a fractional zoom level.
+ * @param options.layer A Mapbox GL style layer object
+ * @param {Object.&lt;string, Buffer>} options.buffers The set of `Buffer`s being
+ *     built for this tile. This object facilitates sharing of `Buffer`s be
+       between `Bucket`s.
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Bucket</span><span class="params">(options)</span> {</span>
+    <span class="keyword">this</span>.zoom = options.zoom;
+    <span class="keyword">this</span>.overscaling = options.overscaling;
+    <span class="keyword">this</span>.layer = options.layer;
+    <span class="keyword">this</span>.childLayers = options.childLayers;
+
+    <span class="keyword">this</span>.type = <span class="keyword">this</span>.layer.type;
+    <span class="keyword">this</span>.features = [];
+    <span class="keyword">this</span>.id = <span class="keyword">this</span>.layer.id;
+    <span class="keyword">this</span>.index = options.index;
+    <span class="keyword">this</span>.sourceLayer = <span class="keyword">this</span>.layer.sourceLayer;
+    <span class="keyword">this</span>.sourceLayerIndex = options.sourceLayerIndex;
+    <span class="keyword">this</span>.minZoom = <span class="keyword">this</span>.layer.minzoom;
+    <span class="keyword">this</span>.maxZoom = <span class="keyword">this</span>.layer.maxzoom;
+
+    <span class="keyword">this</span>.paintAttributes = createPaintAttributes(<span class="keyword">this</span>);
+
+    <span class="keyword">if</span> (options.arrays) {
+        <span class="keyword">var</span> childLayers = <span class="keyword">this</span>.childLayers;
+        <span class="keyword">this</span>.bufferGroups = util.mapObject(options.arrays, <span class="keyword">function</span>(programArrayGroups, programName) {
+            <span class="keyword">return</span> programArrayGroups.map(<span class="keyword">function</span>(programArrayGroup) {
+
+                <span class="keyword">var</span> group = util.mapObject(programArrayGroup, <span class="keyword">function</span>(arrays, layoutOrPaint) {
+                    <span class="keyword">return</span> util.mapObject(arrays, <span class="keyword">function</span>(array, name) {
+                        <span class="keyword">var</span> arrayType = options.arrayTypes[programName][layoutOrPaint][name];
+                        <span class="keyword">var</span> type = (arrayType.members.length &amp;&amp; arrayType.members[<span class="number">0</span>].name === <span class="string">'vertices'</span> ? Buffer.BufferType.ELEMENT : Buffer.BufferType.VERTEX);
+                        <span class="keyword">return</span> <span class="keyword">new</span> Buffer(array, arrayType, type);
+                    });
+                });
+
+                group.vaos = {};
+                <span class="keyword">if</span> (group.layout.element2) group.secondVaos = {};
+                <span class="keyword">for</span> (<span class="keyword">var</span> l = <span class="number">0</span>; l &lt; childLayers.length; l++) {
+                    <span class="keyword">var</span> layerName = childLayers[l].id;
+                    group.vaos[layerName] = <span class="keyword">new</span> VertexArrayObject();
+                    <span class="keyword">if</span> (group.layout.element2) group.secondVaos[layerName] = <span class="keyword">new</span> VertexArrayObject();
+                }
+
+                <span class="keyword">return</span> group;
+            });
+        });
+    }
+}
+
+<span class="comment">/**
+ * Build the buffers! Features are set directly to the `features` property.
+ * @private
+ */</span>
+Bucket.prototype.populateBuffers = <span class="keyword">function</span>() {
+    <span class="keyword">this</span>.createArrays();
+    <span class="keyword">this</span>.recalculateStyleLayers();
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.features.length; i++) {
+        <span class="keyword">this</span>.addFeature(<span class="keyword">this</span>.features[i]);
+    }
+
+    <span class="keyword">this</span>.trimArrays();
+};
+
+<span class="comment">/**
+ * Check if there is enough space available in the current element group for
+ * `vertexLength` vertices. If not, append a new elementGroup. Should be called
+ * by `populateBuffers` and its callees.
+ * @private
+ * @param {string} programName the name of the program associated with the buffer that will receive the vertices
+ * @param {number} vertexLength The number of vertices that will be inserted to the buffer.
+ */</span>
+Bucket.prototype.makeRoomFor = <span class="keyword">function</span>(programName, numVertices) {
+    <span class="keyword">var</span> groups = <span class="keyword">this</span>.arrayGroups[programName];
+    <span class="keyword">var</span> currentGroup = groups.length &amp;&amp; groups[groups.length - <span class="number">1</span>];
+
+    <span class="keyword">if</span> (!currentGroup || currentGroup.layout.vertex.length + numVertices > <span class="number">65535</span>) {
+
+        <span class="keyword">var</span> arrayTypes = <span class="keyword">this</span>.arrayTypes[programName];
+        <span class="keyword">var</span> VertexArrayType = arrayTypes.layout.vertex;
+        <span class="keyword">var</span> ElementArrayType = arrayTypes.layout.element;
+        <span class="keyword">var</span> ElementArrayType2 = arrayTypes.layout.element2;
+
+        currentGroup = {
+            index: groups.length,
+            layout: {},
+            paint: {}
+        };
+
+        currentGroup.layout.vertex = <span class="keyword">new</span> VertexArrayType();
+        <span class="keyword">if</span> (ElementArrayType) currentGroup.layout.element = <span class="keyword">new</span> ElementArrayType();
+        <span class="keyword">if</span> (ElementArrayType2) currentGroup.layout.element2 = <span class="keyword">new</span> ElementArrayType2();
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.childLayers.length; i++) {
+            <span class="keyword">var</span> layerName = <span class="keyword">this</span>.childLayers[i].id;
+            <span class="keyword">var</span> PaintVertexArrayType = arrayTypes.paint[layerName];
+            currentGroup.paint[layerName] = <span class="keyword">new</span> PaintVertexArrayType();
+        }
+
+        groups.push(currentGroup);
+    }
+
+    <span class="keyword">return</span> currentGroup;
+};
+
+<span class="comment">/**
+ * Start using a new shared `buffers` object and recreate instances of `Buffer`
+ * as necessary.
+ * @private
+ */</span>
+Bucket.prototype.createArrays = <span class="keyword">function</span>() {
+    <span class="keyword">this</span>.arrayGroups = {};
+    <span class="keyword">this</span>.arrayTypes = {};
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> programName <span class="keyword">in</span> <span class="keyword">this</span>.programInterfaces) {
+        <span class="keyword">var</span> programInterface = <span class="keyword">this</span>.programInterfaces[programName];
+        <span class="keyword">var</span> programArrayTypes = <span class="keyword">this</span>.arrayTypes[programName] = { layout: {}, paint: {} };
+        <span class="keyword">this</span>.arrayGroups[programName] = [];
+
+        <span class="keyword">if</span> (programInterface.vertexBuffer) {
+            <span class="keyword">var</span> VertexArrayType = <span class="keyword">new</span> StructArrayType({
+                members: <span class="keyword">this</span>.programInterfaces[programName].layoutAttributes,
+                alignment: Buffer.VERTEX_ATTRIBUTE_ALIGNMENT
+            });
+
+            programArrayTypes.layout.vertex = VertexArrayType;
+
+            <span class="keyword">var</span> layerPaintAttributes = <span class="keyword">this</span>.paintAttributes[programName];
+            <span class="keyword">for</span> (<span class="keyword">var</span> layerName <span class="keyword">in</span> layerPaintAttributes) {
+                <span class="keyword">var</span> PaintVertexArrayType = <span class="keyword">new</span> StructArrayType({
+                    members: layerPaintAttributes[layerName].attributes,
+                    alignment: Buffer.VERTEX_ATTRIBUTE_ALIGNMENT
+                });
+
+                programArrayTypes.paint[layerName] = PaintVertexArrayType;
+            }
+        }
+
+        <span class="keyword">if</span> (programInterface.elementBuffer) {
+            <span class="keyword">var</span> ElementArrayType = createElementBufferType(programInterface.elementBufferComponents);
+            programArrayTypes.layout.element = ElementArrayType;
+        }
+
+        <span class="keyword">if</span> (programInterface.elementBuffer2) {
+            <span class="keyword">var</span> ElementArrayType2 = createElementBufferType(programInterface.elementBuffer2Components);
+            programArrayTypes.layout.element2 = ElementArrayType2;
+        }
+    }
+};
+
+Bucket.prototype.destroy = <span class="keyword">function</span>(gl) {
+    <span class="keyword">for</span> (<span class="keyword">var</span> programName <span class="keyword">in</span> <span class="keyword">this</span>.bufferGroups) {
+        <span class="keyword">var</span> programBufferGroups = <span class="keyword">this</span>.bufferGroups[programName];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; programBufferGroups.length; i++) {
+            <span class="keyword">var</span> programBuffers = programBufferGroups[i];
+            <span class="keyword">for</span> (<span class="keyword">var</span> paintBuffer <span class="keyword">in</span> programBuffers.paint) {
+                programBuffers.paint[paintBuffer].destroy(gl);
+            }
+            <span class="keyword">for</span> (<span class="keyword">var</span> layoutBuffer <span class="keyword">in</span> programBuffers.layout) {
+                programBuffers.layout[layoutBuffer].destroy(gl);
+            }
+            <span class="keyword">for</span> (<span class="keyword">var</span> j <span class="keyword">in</span> programBuffers.vaos) {
+                programBuffers.vaos[j].destroy(gl);
+            }
+            <span class="keyword">for</span> (<span class="keyword">var</span> k <span class="keyword">in</span> programBuffers.secondVaos) {
+                programBuffers.secondVaos[k].destroy(gl);
+            }
+        }
+    }
+
+};
+
+Bucket.prototype.trimArrays = <span class="keyword">function</span>() {
+    <span class="keyword">for</span> (<span class="keyword">var</span> programName <span class="keyword">in</span> <span class="keyword">this</span>.arrayGroups) {
+        <span class="keyword">var</span> programArrays = <span class="keyword">this</span>.arrayGroups[programName];
+        <span class="keyword">for</span> (<span class="keyword">var</span> paintArray <span class="keyword">in</span> programArrays.paint) {
+            programArrays.paint[paintArray].trim();
+        }
+        <span class="keyword">for</span> (<span class="keyword">var</span> layoutArray <span class="keyword">in</span> programArrays.layout) {
+            programArrays.layout[layoutArray].trim();
+        }
+    }
+};
+
+Bucket.prototype.setUniforms = <span class="keyword">function</span>(gl, programName, program, layer, globalProperties) {
+    <span class="keyword">var</span> uniforms = <span class="keyword">this</span>.paintAttributes[programName][layer.id].uniforms;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; uniforms.length; i++) {
+        <span class="keyword">var</span> uniform = uniforms[i];
+        <span class="keyword">var</span> uniformLocation = program[uniform.name];
+        gl[<span class="string">'uniform'</span> + uniform.components + <span class="string">'fv'</span>](uniformLocation, uniform.getValue(layer, globalProperties));
+    }
+};
+
+Bucket.prototype.serialize = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> {
+        layerId: <span class="keyword">this</span>.layer.id,
+        zoom: <span class="keyword">this</span>.zoom,
+        arrays: util.mapObject(<span class="keyword">this</span>.arrayGroups, <span class="keyword">function</span>(programArrayGroups) {
+            <span class="keyword">return</span> programArrayGroups.map(<span class="keyword">function</span>(arrayGroup) {
+                <span class="keyword">return</span> util.mapObject(arrayGroup, <span class="keyword">function</span>(arrays) {
+                    <span class="keyword">return</span> util.mapObject(arrays, <span class="keyword">function</span>(array) {
+                        <span class="keyword">return</span> array.serialize();
+                    });
+                });
+            });
+        }),
+        arrayTypes: util.mapObject(<span class="keyword">this</span>.arrayTypes, <span class="keyword">function</span>(programArrayTypes) {
+            <span class="keyword">return</span> util.mapObject(programArrayTypes, <span class="keyword">function</span>(arrayTypes) {
+                <span class="keyword">return</span> util.mapObject(arrayTypes, <span class="keyword">function</span>(arrayType) {
+                    <span class="keyword">return</span> arrayType.serialize();
+                });
+            });
+        }),
+
+        childLayerIds: <span class="keyword">this</span>.childLayers.map(<span class="keyword">function</span>(layer) {
+            <span class="keyword">return</span> layer.id;
+        })
+    };
+};
+
+Bucket.prototype.createFilter = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.filter) {
+        <span class="keyword">this</span>.filter = featureFilter(<span class="keyword">this</span>.layer.filter);
+    }
+};
+
+<span class="keyword">var</span> FAKE_ZOOM_HISTORY = { lastIntegerZoom: <span class="literal">Infinity</span>, lastIntegerZoomTime: <span class="number">0</span>, lastZoom: <span class="number">0</span> };
+Bucket.prototype.recalculateStyleLayers = <span class="keyword">function</span>() {
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.childLayers.length; i++) {
+        <span class="keyword">this</span>.childLayers[i].recalculate(<span class="keyword">this</span>.zoom, FAKE_ZOOM_HISTORY);
+    }
+};
+
+Bucket.prototype.getProgramMacros = <span class="keyword">function</span>(programInterface, layer) {
+    <span class="keyword">var</span> macros = [];
+    <span class="keyword">var</span> attributes = <span class="keyword">this</span>.paintAttributes[programInterface][layer.id].attributes;
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; attributes.length; i++) {
+        <span class="keyword">var</span> attribute = attributes[i];
+        macros.push(<span class="string">'ATTRIBUTE_'</span> + (attribute.isFunction ? <span class="string">'ZOOM_FUNCTION_'</span> : <span class="string">''</span>) + attribute.name.toUpperCase());
+    }
+    <span class="keyword">return</span> macros;
+};
+
+Bucket.prototype.addPaintAttributes = <span class="keyword">function</span>(interfaceName, globalProperties, featureProperties, startGroup, startIndex) {
+    <span class="keyword">for</span> (<span class="keyword">var</span> l = <span class="number">0</span>; l &lt; <span class="keyword">this</span>.childLayers.length; l++) {
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.childLayers[l];
+        <span class="keyword">var</span> groups = <span class="keyword">this</span>.arrayGroups[interfaceName];
+        <span class="keyword">for</span> (<span class="keyword">var</span> g = startGroup.index; g &lt; groups.length; g++) {
+            <span class="keyword">var</span> group = groups[g];
+            <span class="keyword">var</span> length = group.layout.vertex.length;
+            <span class="keyword">var</span> vertexArray = group.paint[layer.id];
+            vertexArray.resize(length);
+
+            <span class="keyword">var</span> attributes = <span class="keyword">this</span>.paintAttributes[interfaceName][layer.id].attributes;
+            <span class="keyword">for</span> (<span class="keyword">var</span> m = <span class="number">0</span>; m &lt; attributes.length; m++) {
+                <span class="keyword">var</span> attribute = attributes[m];
+
+                <span class="keyword">var</span> value = attribute.getValue(layer, globalProperties, featureProperties);
+                <span class="keyword">var</span> multiplier = attribute.multiplier || <span class="number">1</span>;
+                <span class="keyword">var</span> components = attribute.components || <span class="number">1</span>;
+
+                <span class="keyword">for</span> (<span class="keyword">var</span> i = startIndex; i &lt; length; i++) {
+                    <span class="keyword">var</span> vertex = vertexArray.get(i);
+                    <span class="keyword">for</span> (<span class="keyword">var</span> c = <span class="number">0</span>; c &lt; components; c++) {
+                        <span class="keyword">var</span> memberName = components > <span class="number">1</span> ? (attribute.name + c) : attribute.name;
+                        vertex[memberName] = value[c] * multiplier;
+                    }
+                }
+            }
+        }
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">createElementBufferType</span><span class="params">(components)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> StructArrayType({
+        members: [{
+            type: Buffer.ELEMENT_ATTRIBUTE_TYPE,
+            name: <span class="string">'vertices'</span>,
+            components: components || <span class="number">3</span>
+        }]
+    });
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createPaintAttributes</span><span class="params">(bucket)</span> {</span>
+    <span class="keyword">var</span> attributes = {};
+    <span class="keyword">for</span> (<span class="keyword">var</span> interfaceName <span class="keyword">in</span> bucket.programInterfaces) {
+        <span class="keyword">var</span> layerPaintAttributes = attributes[interfaceName] = {};
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> c = <span class="number">0</span>; c &lt; bucket.childLayers.length; c++) {
+            <span class="keyword">var</span> childLayer = bucket.childLayers[c];
+            layerPaintAttributes[childLayer.id] = { attributes: [], uniforms: [] };
+        }
+
+        <span class="keyword">var</span> interface_ = bucket.programInterfaces[interfaceName];
+        <span class="keyword">if</span> (!interface_.paintAttributes) <span class="keyword">continue</span>;
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; interface_.paintAttributes.length; i++) {
+            <span class="keyword">var</span> attribute = interface_.paintAttributes[i];
+
+            <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; bucket.childLayers.length; j++) {
+                <span class="keyword">var</span> layer = bucket.childLayers[j];
+                <span class="keyword">var</span> paintAttributes = layerPaintAttributes[layer.id];
+
+                <span class="keyword">if</span> (layer.isPaintValueFeatureConstant(attribute.paintProperty)) {
+                    paintAttributes.uniforms.push(attribute);
+                } <span class="keyword">else</span> <span class="keyword">if</span> (layer.isPaintValueZoomConstant(attribute.paintProperty)) {
+                    paintAttributes.attributes.push(attribute);
+                } <span class="keyword">else</span> {
+
+                    <span class="keyword">var</span> zoomLevels = layer.getPaintValueStopZoomLevels(attribute.paintProperty);
+
+                    <span class="comment">// Pick the index of the first offset to add to the buffers.</span>
+                    <span class="comment">// Find the four closest stops, ideally with two on each side of the zoom level.</span>
+                    <span class="keyword">var</span> numStops = <span class="number">0</span>;
+                    <span class="keyword">while</span> (numStops &lt; zoomLevels.length &amp;&amp; zoomLevels[numStops] &lt; bucket.zoom) numStops++;
+                    <span class="keyword">var</span> stopOffset = Math.max(<span class="number">0</span>, Math.min(zoomLevels.length - <span class="number">4</span>, numStops - <span class="number">2</span>));
+
+                    <span class="keyword">var</span> fourZoomLevels = [];
+                    <span class="keyword">for</span> (<span class="keyword">var</span> s = <span class="number">0</span>; s &lt; <span class="number">4</span>; s++) {
+                        fourZoomLevels.push(zoomLevels[Math.min(stopOffset + s, zoomLevels.length - <span class="number">1</span>)]);
+                    }
+
+                    <span class="keyword">var</span> components = attribute.components;
+                    <span class="keyword">if</span> (components === <span class="number">1</span>) {
+                        paintAttributes.attributes.push(util.extend({}, attribute, {
+                            getValue: createFunctionGetValue(attribute, fourZoomLevels),
+                            isFunction: <span class="literal">true</span>,
+                            components: components * <span class="number">4</span>
+                        }));
+                    } <span class="keyword">else</span> {
+                        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; <span class="number">4</span>; k++) {
+                            paintAttributes.attributes.push(util.extend({}, attribute, {
+                                getValue: createFunctionGetValue(attribute, [fourZoomLevels[k]]),
+                                isFunction: <span class="literal">true</span>,
+                                name: attribute.name + k
+                            }));
+                        }
+                    }
+
+                    paintAttributes.uniforms.push(util.extend({}, attribute, {
+                        name: <span class="string">'u_'</span> + attribute.name.slice(<span class="number">2</span>) + <span class="string">'_t'</span>,
+                        getValue: createGetUniform(attribute, stopOffset),
+                        components: <span class="number">1</span>
+                    }));
+                }
+            }
+        }
+    }
+    <span class="keyword">return</span> attributes;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createFunctionGetValue</span><span class="params">(attribute, stopZoomLevels)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">function</span>(layer, globalProperties, featureProperties) {
+        <span class="keyword">if</span> (stopZoomLevels.length === <span class="number">1</span>) {
+            <span class="comment">// return one multi-component value like color0</span>
+            <span class="keyword">return</span> attribute.getValue(layer, util.extend({}, globalProperties, { zoom: stopZoomLevels[<span class="number">0</span>] }), featureProperties);
+        } <span class="keyword">else</span> {
+            <span class="comment">// pack multiple single-component values into a four component attribute</span>
+            <span class="keyword">var</span> values = [];
+            <span class="keyword">for</span> (<span class="keyword">var</span> z = <span class="number">0</span>; z &lt; stopZoomLevels.length; z++) {
+                <span class="keyword">var</span> stopZoomLevel = stopZoomLevels[z];
+                values.push(attribute.getValue(layer, util.extend({}, globalProperties, { zoom: stopZoomLevel }), featureProperties)[<span class="number">0</span>]);
+            }
+            <span class="keyword">return</span> values;
+        }
+    };
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createGetUniform</span><span class="params">(attribute, stopOffset)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">function</span>(layer, globalProperties) {
+        <span class="comment">// stopInterp indicates which stops need to be interpolated.</span>
+        <span class="comment">// If stopInterp is 3.5 then interpolate half way between stops 3 and 4.</span>
+        <span class="keyword">var</span> stopInterp = layer.getPaintInterpolationT(attribute.paintProperty, globalProperties.zoom);
+        <span class="comment">// We can only store four stop values in the buffers. stopOffset is the number of stops that come</span>
+        <span class="comment">// before the stops that were added to the buffers.</span>
+        <span class="keyword">return</span> [Math.max(<span class="number">0</span>, Math.min(<span class="number">4</span>, stopInterp - stopOffset))];
+    };
+}
+</code></pre>

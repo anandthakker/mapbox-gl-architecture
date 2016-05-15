@@ -1,0 +1,182 @@
+<h1>tile.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> Bucket = require(<span class="string">'../data/bucket'</span>);
+<span class="keyword">var</span> FeatureIndex = require(<span class="string">'../data/feature_index'</span>);
+<span class="keyword">var</span> vt = require(<span class="string">'vector-tile'</span>);
+<span class="keyword">var</span> Protobuf = require(<span class="string">'pbf'</span>);
+<span class="keyword">var</span> GeoJSONFeature = require(<span class="string">'../util/vectortile_to_geojson'</span>);
+<span class="keyword">var</span> featureFilter = require(<span class="string">'feature-filter'</span>);
+<span class="keyword">var</span> CollisionTile = require(<span class="string">'../symbol/collision_tile'</span>);
+<span class="keyword">var</span> CollisionBoxArray = require(<span class="string">'../symbol/collision_box'</span>);
+
+module.exports = Tile;
+
+<span class="comment">/**
+ * A tile object is the combination of a Coordinate, which defines
+ * its place, as well as a unique ID and data tracking for its content
+ *
+ * @param {Coordinate} coord
+ * @param {number} size
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Tile</span><span class="params">(coord, size, sourceMaxZoom)</span> {</span>
+    <span class="keyword">this</span>.coord = coord;
+    <span class="keyword">this</span>.uid = util.uniqueId();
+    <span class="keyword">this</span>.loaded = <span class="literal">false</span>; <span class="comment">// TODO rename loaded</span>
+    <span class="keyword">this</span>.isUnloaded = <span class="literal">false</span>;
+    <span class="keyword">this</span>.uses = <span class="number">0</span>;
+    <span class="keyword">this</span>.tileSize = size;
+    <span class="keyword">this</span>.sourceMaxZoom = sourceMaxZoom;
+    <span class="keyword">this</span>.buckets = {};
+}
+
+Tile.prototype = {
+
+    <span class="comment">/**
+     * Given a data object with a 'buffers' property, load it into
+     * this tile's elementGroups and buffers properties and set loaded
+     * to true. If the data is null, like in the case of an empty
+     * GeoJSON tile, no-op but still set loaded to true.
+     * @param {Object} data
+     * @returns {undefined}
+     * @private
+     */</span>
+    loadVectorData: <span class="keyword">function</span>(data, style) {
+        <span class="keyword">this</span>.loaded = <span class="literal">true</span>;
+
+        <span class="comment">// empty GeoJSON tile</span>
+        <span class="keyword">if</span> (!data) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>.collisionBoxArray = <span class="keyword">new</span> CollisionBoxArray(data.collisionBoxArray);
+        <span class="keyword">this</span>.collisionTile = <span class="keyword">new</span> CollisionTile(data.collisionTile, <span class="keyword">this</span>.collisionBoxArray);
+        <span class="keyword">this</span>.featureIndex = <span class="keyword">new</span> FeatureIndex(data.featureIndex, data.rawTileData, <span class="keyword">this</span>.collisionTile);
+        <span class="keyword">this</span>.rawTileData = data.rawTileData;
+        <span class="keyword">this</span>.buckets = unserializeBuckets(data.buckets, style);
+    },
+
+    <span class="comment">/**
+     * given a data object and a GL painter, destroy and re-create
+     * all of its buffers.
+     * @param {Object} data
+     * @param {Object} painter
+     * @returns {undefined}
+     * @private
+     */</span>
+    reloadSymbolData: <span class="keyword">function</span>(data, painter, style) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isUnloaded) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>.collisionTile = <span class="keyword">new</span> CollisionTile(data.collisionTile, <span class="keyword">this</span>.collisionBoxArray);
+        <span class="keyword">this</span>.featureIndex.setCollisionTile(<span class="keyword">this</span>.collisionTile);
+
+        <span class="comment">// Destroy and delete existing symbol buckets</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.buckets) {
+            <span class="keyword">var</span> bucket = <span class="keyword">this</span>.buckets[id];
+            <span class="keyword">if</span> (bucket.type === <span class="string">'symbol'</span>) {
+                bucket.destroy(painter.gl);
+                <span class="keyword">delete</span> <span class="keyword">this</span>.buckets[id];
+            }
+        }
+
+        <span class="comment">// Add new symbol buckets</span>
+        util.extend(<span class="keyword">this</span>.buckets, unserializeBuckets(data.buckets, style));
+    },
+
+    <span class="comment">/**
+     * Make sure that this tile doesn't own any data within a given
+     * painter, so that it doesn't consume any memory or maintain
+     * any references to the painter.
+     * @param {Object} painter gl painter object
+     * @returns {undefined}
+     * @private
+     */</span>
+    unloadVectorData: <span class="keyword">function</span>(painter) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> id <span class="keyword">in</span> <span class="keyword">this</span>.buckets) {
+            <span class="keyword">var</span> bucket = <span class="keyword">this</span>.buckets[id];
+            bucket.destroy(painter.gl);
+        }
+
+        <span class="keyword">this</span>.collisionBoxArray = <span class="literal">null</span>;
+        <span class="keyword">this</span>.collisionTile = <span class="literal">null</span>;
+        <span class="keyword">this</span>.featureIndex = <span class="literal">null</span>;
+        <span class="keyword">this</span>.rawTileData = <span class="literal">null</span>;
+        <span class="keyword">this</span>.buckets = <span class="literal">null</span>;
+        <span class="keyword">this</span>.loaded = <span class="literal">false</span>;
+        <span class="keyword">this</span>.isUnloaded = <span class="literal">true</span>;
+    },
+
+    redoPlacement: <span class="keyword">function</span>(source) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.loaded || <span class="keyword">this</span>.redoingPlacement) {
+            <span class="keyword">this</span>.redoWhenDone = <span class="literal">true</span>;
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">this</span>.redoingPlacement = <span class="literal">true</span>;
+
+        source.dispatcher.send(<span class="string">'redo placement'</span>, {
+            uid: <span class="keyword">this</span>.uid,
+            source: source.id,
+            angle: source.map.transform.angle,
+            pitch: source.map.transform.pitch,
+            showCollisionBoxes: source.map.showCollisionBoxes
+        }, done.bind(<span class="keyword">this</span>), <span class="keyword">this</span>.workerID);
+
+        <span class="function"><span class="keyword">function</span> <span class="title">done</span><span class="params">(_, data)</span> {</span>
+            <span class="keyword">this</span>.reloadSymbolData(data, source.map.painter, source.map.style);
+            source.fire(<span class="string">'tile.load'</span>, {tile: <span class="keyword">this</span>});
+
+            <span class="keyword">this</span>.redoingPlacement = <span class="literal">false</span>;
+            <span class="keyword">if</span> (<span class="keyword">this</span>.redoWhenDone) {
+                <span class="keyword">this</span>.redoPlacement(source);
+                <span class="keyword">this</span>.redoWhenDone = <span class="literal">false</span>;
+            }
+        }
+    },
+
+    getBucket: <span class="keyword">function</span>(layer) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.buckets &amp;&amp; <span class="keyword">this</span>.buckets[layer.ref || layer.id];
+    },
+
+    querySourceFeatures: <span class="keyword">function</span>(result, params) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.rawTileData) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.vtLayers) {
+            <span class="keyword">this</span>.vtLayers = <span class="keyword">new</span> vt.VectorTile(<span class="keyword">new</span> Protobuf(<span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.rawTileData))).layers;
+        }
+
+        <span class="keyword">var</span> layer = <span class="keyword">this</span>.vtLayers._geojsonTileLayer || <span class="keyword">this</span>.vtLayers[params.sourceLayer];
+
+        <span class="keyword">if</span> (!layer) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> filter = featureFilter(params.filter);
+        <span class="keyword">var</span> coord = { z: <span class="keyword">this</span>.coord.z, x: <span class="keyword">this</span>.coord.x, y: <span class="keyword">this</span>.coord.y };
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; layer.length; i++) {
+            <span class="keyword">var</span> feature = layer.feature(i);
+            <span class="keyword">if</span> (filter(feature)) {
+                <span class="keyword">var</span> geojsonFeature = <span class="keyword">new</span> GeoJSONFeature(feature, <span class="keyword">this</span>.coord.z, <span class="keyword">this</span>.coord.x, <span class="keyword">this</span>.coord.y);
+                geojsonFeature.tile = coord;
+                result.push(geojsonFeature);
+            }
+        }
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">unserializeBuckets</span><span class="params">(input, style)</span> {</span>
+    <span class="keyword">var</span> output = {};
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; input.length; i++) {
+        <span class="keyword">var</span> layer = style.getLayer(input[i].layerId);
+        <span class="keyword">if</span> (!layer) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> bucket = Bucket.create(util.extend({
+            layer: layer,
+            childLayers: input[i].childLayerIds
+                .map(style.getLayer.bind(style))
+                .filter(<span class="keyword">function</span>(layer) { <span class="keyword">return</span> layer; })
+        }, input[i]));
+        output[bucket.id] = bucket;
+    }
+    <span class="keyword">return</span> output;
+}
+</code></pre>

@@ -1,0 +1,39 @@
+<h1>load_geometry.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> EXTENT = require(<span class="string">'./bucket'</span>).EXTENT;
+<span class="keyword">var</span> EXTENT_MIN = EXTENT * -<span class="number">2</span>;
+<span class="keyword">var</span> EXTENT_MAX = (EXTENT * <span class="number">2</span>) - <span class="number">1</span>;
+
+<span class="comment">// only log a geometry warning once per context</span>
+<span class="keyword">var</span> warned = <span class="literal">false</span>;
+
+<span class="comment">/**
+ * Loads a geometry from a VectorTileFeature and scales it to the common extent
+ * used internally.
+ * @private
+ */</span>
+module.exports = <span class="function"><span class="keyword">function</span> <span class="title">loadGeometry</span><span class="params">(feature)</span> {</span>
+    <span class="keyword">var</span> scale = EXTENT / feature.extent;
+    <span class="keyword">var</span> geometry = feature.loadGeometry();
+    <span class="keyword">for</span> (<span class="keyword">var</span> r = <span class="number">0</span>; r &lt; geometry.length; r++) {
+        <span class="keyword">var</span> ring = geometry[r];
+        <span class="keyword">for</span> (<span class="keyword">var</span> p = <span class="number">0</span>; p &lt; ring.length; p++) {
+            <span class="keyword">var</span> point = ring[p];
+            <span class="comment">// round here because mapbox-gl-native uses integers to represent</span>
+            <span class="comment">// points and we need to do the same to avoid renering differences.</span>
+            point.x = Math.round(point.x * scale);
+            point.y = Math.round(point.y * scale);
+            <span class="keyword">if</span> (warned === <span class="literal">false</span> &amp;&amp; (
+                point.x &lt; EXTENT_MIN ||
+                point.x > EXTENT_MAX ||
+                point.y &lt; EXTENT_MIN ||
+                point.y > EXTENT_MAX)) {
+                console.warn(<span class="string">'Geometry exceeds allowed extent, reduce your vector tile buffer size'</span>);
+                warned = <span class="literal">true</span>;
+            }
+        }
+    }
+    <span class="keyword">return</span> geometry;
+};
+</code></pre>

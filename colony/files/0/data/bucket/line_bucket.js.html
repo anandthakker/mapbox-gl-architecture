@@ -1,0 +1,433 @@
+<h1>line_bucket.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Bucket = require(<span class="string">'../bucket'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> loadGeometry = require(<span class="string">'../load_geometry'</span>);
+<span class="keyword">var</span> EXTENT = Bucket.EXTENT;
+
+<span class="comment">// NOTE ON EXTRUDE SCALE:</span>
+<span class="comment">// scale the extrusion vector so that the normal length is this value.</span>
+<span class="comment">// contains the "texture" normals (-1..1). this is distinct from the extrude</span>
+<span class="comment">// normals for line joins, because the x-value remains 0 for the texture</span>
+<span class="comment">// normal array, while the extrude normal actually moves the vertex to create</span>
+<span class="comment">// the acute/bevelled line join.</span>
+<span class="keyword">var</span> EXTRUDE_SCALE = <span class="number">63</span>;
+
+<span class="comment">/*
+ * Sharp corners cause dashed lines to tilt because the distance along the line
+ * is the same at both the inner and outer corners. To improve the appearance of
+ * dashed lines we add extra points near sharp corners so that a smaller part
+ * of the line is tilted.
+ *
+ * COS_HALF_SHARP_CORNER controls how sharp a corner has to be for us to add an
+ * extra vertex. The default is 75 degrees.
+ *
+ * The newly created vertices are placed SHARP_CORNER_OFFSET pixels from the corner.
+ */</span>
+<span class="keyword">var</span> COS_HALF_SHARP_CORNER = Math.cos(<span class="number">75</span> / <span class="number">2</span> * (Math.PI / <span class="number">180</span>));
+<span class="keyword">var</span> SHARP_CORNER_OFFSET = <span class="number">15</span>;
+
+<span class="comment">// The number of bits that is used to store the line distance in the buffer.</span>
+<span class="keyword">var</span> LINE_DISTANCE_BUFFER_BITS = <span class="number">14</span>;
+
+<span class="comment">// We don't have enough bits for the line distance as we'd like to have, so</span>
+<span class="comment">// use this value to scale the line distance (in tile units) down to a smaller</span>
+<span class="comment">// value. This lets us store longer distances while sacrificing precision.</span>
+<span class="keyword">var</span> LINE_DISTANCE_SCALE = <span class="number">1</span> / <span class="number">2</span>;
+
+<span class="comment">// The maximum line distance, in tile units, that fits in the buffer.</span>
+<span class="keyword">var</span> MAX_LINE_DISTANCE = Math.pow(<span class="number">2</span>, LINE_DISTANCE_BUFFER_BITS) / LINE_DISTANCE_SCALE;
+
+
+module.exports = LineBucket;
+
+<span class="comment">/**
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">LineBucket</span><span class="params">()</span> {</span>
+    Bucket.apply(<span class="keyword">this</span>, arguments);
+}
+
+LineBucket.prototype = util.inherit(Bucket, {});
+
+LineBucket.prototype.addLineVertex = <span class="keyword">function</span>(vertexBuffer, point, extrude, tx, ty, dir, linesofar) {
+    <span class="keyword">return</span> vertexBuffer.emplaceBack(
+            <span class="comment">// a_pos</span>
+            (point.x &lt;&lt; <span class="number">1</span>) | tx,
+            (point.y &lt;&lt; <span class="number">1</span>) | ty,
+            <span class="comment">// a_data</span>
+            <span class="comment">// add 128 to store an byte in an unsigned byte</span>
+            Math.round(EXTRUDE_SCALE * extrude.x) + <span class="number">128</span>,
+            Math.round(EXTRUDE_SCALE * extrude.y) + <span class="number">128</span>,
+            <span class="comment">// Encode the -1/0/1 direction value into the first two bits of .z of a_data.</span>
+            <span class="comment">// Combine it with the lower 6 bits of `linesofar` (shifted by 2 bites to make</span>
+            <span class="comment">// room for the direction value). The upper 8 bits of `linesofar` are placed in</span>
+            <span class="comment">// the `w` component. `linesofar` is scaled down by `LINE_DISTANCE_SCALE` so that</span>
+            <span class="comment">// we can store longer distances while sacrificing precision.</span>
+            ((dir === <span class="number">0</span> ? <span class="number">0</span> : (dir &lt; <span class="number">0</span> ? -<span class="number">1</span> : <span class="number">1</span>)) + <span class="number">1</span>) | (((linesofar * LINE_DISTANCE_SCALE) &amp; <span class="number">0x3F</span>) &lt;&lt; <span class="number">2</span>),
+            (linesofar * LINE_DISTANCE_SCALE) >> <span class="number">6</span>);
+};
+
+LineBucket.prototype.programInterfaces = {
+    line: {
+        vertexBuffer: <span class="literal">true</span>,
+        elementBuffer: <span class="literal">true</span>,
+
+        layoutAttributes: [{
+            name: <span class="string">'a_pos'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Int16'</span>
+        }, {
+            name: <span class="string">'a_data'</span>,
+            components: <span class="number">4</span>,
+            type: <span class="string">'Uint8'</span>
+        }]
+    }
+};
+
+LineBucket.prototype.addFeature = <span class="keyword">function</span>(feature) {
+    <span class="keyword">var</span> lines = loadGeometry(feature);
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; lines.length; i++) {
+        <span class="keyword">this</span>.addLine(
+            lines[i],
+            <span class="keyword">this</span>.layer.layout[<span class="string">'line-join'</span>],
+            <span class="keyword">this</span>.layer.layout[<span class="string">'line-cap'</span>],
+            <span class="keyword">this</span>.layer.layout[<span class="string">'line-miter-limit'</span>],
+            <span class="keyword">this</span>.layer.layout[<span class="string">'line-round-limit'</span>]
+        );
+    }
+};
+
+LineBucket.prototype.addLine = <span class="keyword">function</span>(vertices, join, cap, miterLimit, roundLimit) {
+
+    <span class="keyword">var</span> len = vertices.length;
+    <span class="comment">// If the line has duplicate vertices at the end, adjust length to remove them.</span>
+    <span class="keyword">while</span> (len > <span class="number">2</span> &amp;&amp; vertices[len - <span class="number">1</span>].equals(vertices[len - <span class="number">2</span>])) {
+        len--;
+    }
+
+    <span class="keyword">if</span> (vertices.length &lt; <span class="number">2</span>) {
+        <span class="comment">//console.warn('a line must have at least two vertices');</span>
+        <span class="keyword">return</span>;
+    }
+
+    <span class="keyword">if</span> (join === <span class="string">'bevel'</span>) miterLimit = <span class="number">1.05</span>;
+
+    <span class="keyword">var</span> sharpCornerOffset = SHARP_CORNER_OFFSET * (EXTENT / (<span class="number">512</span> * <span class="keyword">this</span>.overscaling));
+
+    <span class="keyword">var</span> firstVertex = vertices[<span class="number">0</span>],
+        lastVertex = vertices[len - <span class="number">1</span>],
+        closed = firstVertex.equals(lastVertex);
+
+    <span class="comment">// we could be more precise, but it would only save a negligible amount of space</span>
+    <span class="keyword">this</span>.makeRoomFor(<span class="string">'line'</span>, len * <span class="number">10</span>);
+
+    <span class="keyword">if</span> (len === <span class="number">2</span> &amp;&amp; closed) {
+        <span class="comment">// console.warn('a line may not have coincident points');</span>
+        <span class="keyword">return</span>;
+    }
+
+    <span class="keyword">this</span>.distance = <span class="number">0</span>;
+
+    <span class="keyword">var</span> beginCap = cap,
+        endCap = closed ? <span class="string">'butt'</span> : cap,
+        startOfLine = <span class="literal">true</span>,
+        currentVertex, prevVertex, nextVertex, prevNormal, nextNormal, offsetA, offsetB;
+
+    <span class="comment">// the last three vertices added</span>
+    <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e2 = <span class="keyword">this</span>.e3 = -<span class="number">1</span>;
+
+    <span class="keyword">if</span> (closed) {
+        currentVertex = vertices[len - <span class="number">2</span>];
+        nextNormal = firstVertex.sub(currentVertex)._unit()._perp();
+    }
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; len; i++) {
+
+        nextVertex = closed &amp;&amp; i === len - <span class="number">1</span> ?
+            vertices[<span class="number">1</span>] : <span class="comment">// if the line is closed, we treat the last vertex like the first</span>
+            vertices[i + <span class="number">1</span>]; <span class="comment">// just the next vertex</span>
+
+        <span class="comment">// if two consecutive vertices exist, skip the current one</span>
+        <span class="keyword">if</span> (nextVertex &amp;&amp; vertices[i].equals(nextVertex)) <span class="keyword">continue</span>;
+
+        <span class="keyword">if</span> (nextNormal) prevNormal = nextNormal;
+        <span class="keyword">if</span> (currentVertex) prevVertex = currentVertex;
+
+        currentVertex = vertices[i];
+
+        <span class="comment">// Calculate the normal towards the next vertex in this line. In case</span>
+        <span class="comment">// there is no next vertex, pretend that the line is continuing straight,</span>
+        <span class="comment">// meaning that we are just using the previous normal.</span>
+        nextNormal = nextVertex ? nextVertex.sub(currentVertex)._unit()._perp() : prevNormal;
+
+        <span class="comment">// If we still don't have a previous normal, this is the beginning of a</span>
+        <span class="comment">// non-closed line, so we're doing a straight "join".</span>
+        prevNormal = prevNormal || nextNormal;
+
+        <span class="comment">// Determine the normal of the join extrusion. It is the angle bisector</span>
+        <span class="comment">// of the segments between the previous line and the next line.</span>
+        <span class="keyword">var</span> joinNormal = prevNormal.add(nextNormal)._unit();
+
+        <span class="comment">/*  joinNormal     prevNormal
+         *             ↖      ↑
+         *                .________. prevVertex
+         *                |
+         * nextNormal  ←  |  currentVertex
+         *                |
+         *     nextVertex !
+         *
+         */</span>
+
+        <span class="comment">// Calculate the length of the miter (the ratio of the miter to the width).</span>
+        <span class="comment">// Find the cosine of the angle between the next and join normals</span>
+        <span class="comment">// using dot product. The inverse of that is the miter length.</span>
+        <span class="keyword">var</span> cosHalfAngle = joinNormal.x * nextNormal.x + joinNormal.y * nextNormal.y;
+        <span class="keyword">var</span> miterLength = <span class="number">1</span> / cosHalfAngle;
+
+        <span class="keyword">var</span> isSharpCorner = cosHalfAngle &lt; COS_HALF_SHARP_CORNER &amp;&amp; prevVertex &amp;&amp; nextVertex;
+
+        <span class="keyword">if</span> (isSharpCorner &amp;&amp; i > <span class="number">0</span>) {
+            <span class="keyword">var</span> prevSegmentLength = currentVertex.dist(prevVertex);
+            <span class="keyword">if</span> (prevSegmentLength > <span class="number">2</span> * sharpCornerOffset) {
+                <span class="keyword">var</span> newPrevVertex = currentVertex.sub(currentVertex.sub(prevVertex)._mult(sharpCornerOffset / prevSegmentLength)._round());
+                <span class="keyword">this</span>.distance += newPrevVertex.dist(prevVertex);
+                <span class="keyword">this</span>.addCurrentVertex(newPrevVertex, <span class="keyword">this</span>.distance, prevNormal.mult(<span class="number">1</span>), <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+                prevVertex = newPrevVertex;
+            }
+        }
+
+        <span class="comment">// The join if a middle vertex, otherwise the cap.</span>
+        <span class="keyword">var</span> middleVertex = prevVertex &amp;&amp; nextVertex;
+        <span class="keyword">var</span> currentJoin = middleVertex ? join : nextVertex ? beginCap : endCap;
+
+        <span class="keyword">if</span> (middleVertex &amp;&amp; currentJoin === <span class="string">'round'</span>) {
+            <span class="keyword">if</span> (miterLength &lt; roundLimit) {
+                currentJoin = <span class="string">'miter'</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (miterLength &lt;= <span class="number">2</span>) {
+                currentJoin = <span class="string">'fakeround'</span>;
+            }
+        }
+
+        <span class="keyword">if</span> (currentJoin === <span class="string">'miter'</span> &amp;&amp; miterLength > miterLimit) {
+            currentJoin = <span class="string">'bevel'</span>;
+        }
+
+        <span class="keyword">if</span> (currentJoin === <span class="string">'bevel'</span>) {
+            <span class="comment">// The maximum extrude length is 128 / 63 = 2 times the width of the line</span>
+            <span class="comment">// so if miterLength >= 2 we need to draw a different type of bevel where.</span>
+            <span class="keyword">if</span> (miterLength > <span class="number">2</span>) currentJoin = <span class="string">'flipbevel'</span>;
+
+            <span class="comment">// If the miterLength is really small and the line bevel wouldn't be visible,</span>
+            <span class="comment">// just draw a miter join to save a triangle.</span>
+            <span class="keyword">if</span> (miterLength &lt; miterLimit) currentJoin = <span class="string">'miter'</span>;
+        }
+
+        <span class="comment">// Calculate how far along the line the currentVertex is</span>
+        <span class="keyword">if</span> (prevVertex) <span class="keyword">this</span>.distance += currentVertex.dist(prevVertex);
+
+        <span class="keyword">if</span> (currentJoin === <span class="string">'miter'</span>) {
+
+            joinNormal._mult(miterLength);
+            <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, joinNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (currentJoin === <span class="string">'flipbevel'</span>) {
+            <span class="comment">// miter is too big, flip the direction to make a beveled join</span>
+
+            <span class="keyword">if</span> (miterLength > <span class="number">100</span>) {
+                <span class="comment">// Almost parallel lines</span>
+                joinNormal = nextNormal.clone();
+
+            } <span class="keyword">else</span> {
+                <span class="keyword">var</span> direction = prevNormal.x * nextNormal.y - prevNormal.y * nextNormal.x > <span class="number">0</span> ? -<span class="number">1</span> : <span class="number">1</span>;
+                <span class="keyword">var</span> bevelLength = miterLength * prevNormal.add(nextNormal).mag() / prevNormal.sub(nextNormal).mag();
+                joinNormal._perp()._mult(bevelLength * direction);
+            }
+            <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, joinNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+            <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, joinNormal.mult(-<span class="number">1</span>), <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (currentJoin === <span class="string">'bevel'</span> || currentJoin === <span class="string">'fakeround'</span>) {
+            <span class="keyword">var</span> lineTurnsLeft = (prevNormal.x * nextNormal.y - prevNormal.y * nextNormal.x) > <span class="number">0</span>;
+            <span class="keyword">var</span> offset = -Math.sqrt(miterLength * miterLength - <span class="number">1</span>);
+            <span class="keyword">if</span> (lineTurnsLeft) {
+                offsetB = <span class="number">0</span>;
+                offsetA = offset;
+            } <span class="keyword">else</span> {
+                offsetA = <span class="number">0</span>;
+                offsetB = offset;
+            }
+
+            <span class="comment">// Close previous segment with a bevel</span>
+            <span class="keyword">if</span> (!startOfLine) {
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, prevNormal, offsetA, offsetB, <span class="literal">false</span>);
+            }
+
+            <span class="keyword">if</span> (currentJoin === <span class="string">'fakeround'</span>) {
+                <span class="comment">// The join angle is sharp enough that a round join would be visible.</span>
+                <span class="comment">// Bevel joins fill the gap between segments with a single pie slice triangle.</span>
+                <span class="comment">// Create a round join by adding multiple pie slices. The join isn't actually round, but</span>
+                <span class="comment">// it looks like it is at the sizes we render lines at.</span>
+
+                <span class="comment">// Add more triangles for sharper angles.</span>
+                <span class="comment">// This math is just a good enough approximation. It isn't "correct".</span>
+                <span class="keyword">var</span> n = Math.floor((<span class="number">0.5</span> - (cosHalfAngle - <span class="number">0.5</span>)) * <span class="number">8</span>);
+                <span class="keyword">var</span> approxFractionalJoinNormal;
+
+                <span class="keyword">for</span> (<span class="keyword">var</span> m = <span class="number">0</span>; m &lt; n; m++) {
+                    approxFractionalJoinNormal = nextNormal.mult((m + <span class="number">1</span>) / (n + <span class="number">1</span>))._add(prevNormal)._unit();
+                    <span class="keyword">this</span>.addPieSliceVertex(currentVertex, <span class="keyword">this</span>.distance, approxFractionalJoinNormal, lineTurnsLeft);
+                }
+
+                <span class="keyword">this</span>.addPieSliceVertex(currentVertex, <span class="keyword">this</span>.distance, joinNormal, lineTurnsLeft);
+
+                <span class="keyword">for</span> (<span class="keyword">var</span> k = n - <span class="number">1</span>; k >= <span class="number">0</span>; k--) {
+                    approxFractionalJoinNormal = prevNormal.mult((k + <span class="number">1</span>) / (n + <span class="number">1</span>))._add(nextNormal)._unit();
+                    <span class="keyword">this</span>.addPieSliceVertex(currentVertex, <span class="keyword">this</span>.distance, approxFractionalJoinNormal, lineTurnsLeft);
+                }
+            }
+
+            <span class="comment">// Start next segment</span>
+            <span class="keyword">if</span> (nextVertex) {
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, nextNormal, -offsetA, -offsetB, <span class="literal">false</span>);
+            }
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (currentJoin === <span class="string">'butt'</span>) {
+            <span class="keyword">if</span> (!startOfLine) {
+                <span class="comment">// Close previous segment with a butt</span>
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, prevNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+            }
+
+            <span class="comment">// Start next segment with a butt</span>
+            <span class="keyword">if</span> (nextVertex) {
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, nextNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+            }
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (currentJoin === <span class="string">'square'</span>) {
+
+            <span class="keyword">if</span> (!startOfLine) {
+                <span class="comment">// Close previous segment with a square cap</span>
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, prevNormal, <span class="number">1</span>, <span class="number">1</span>, <span class="literal">false</span>);
+
+                <span class="comment">// The segment is done. Unset vertices to disconnect segments.</span>
+                <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e2 = -<span class="number">1</span>;
+            }
+
+            <span class="comment">// Start next segment</span>
+            <span class="keyword">if</span> (nextVertex) {
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, nextNormal, -<span class="number">1</span>, -<span class="number">1</span>, <span class="literal">false</span>);
+            }
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (currentJoin === <span class="string">'round'</span>) {
+
+            <span class="keyword">if</span> (!startOfLine) {
+                <span class="comment">// Close previous segment with butt</span>
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, prevNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+
+                <span class="comment">// Add round cap or linejoin at end of segment</span>
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, prevNormal, <span class="number">1</span>, <span class="number">1</span>, <span class="literal">true</span>);
+
+                <span class="comment">// The segment is done. Unset vertices to disconnect segments.</span>
+                <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e2 = -<span class="number">1</span>;
+            }
+
+
+            <span class="comment">// Start next segment with a butt</span>
+            <span class="keyword">if</span> (nextVertex) {
+                <span class="comment">// Add round cap before first segment</span>
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, nextNormal, -<span class="number">1</span>, -<span class="number">1</span>, <span class="literal">true</span>);
+
+                <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, nextNormal, <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+            }
+        }
+
+        <span class="keyword">if</span> (isSharpCorner &amp;&amp; i &lt; len - <span class="number">1</span>) {
+            <span class="keyword">var</span> nextSegmentLength = currentVertex.dist(nextVertex);
+            <span class="keyword">if</span> (nextSegmentLength > <span class="number">2</span> * sharpCornerOffset) {
+                <span class="keyword">var</span> newCurrentVertex = currentVertex.add(nextVertex.sub(currentVertex)._mult(sharpCornerOffset / nextSegmentLength)._round());
+                <span class="keyword">this</span>.distance += newCurrentVertex.dist(currentVertex);
+                <span class="keyword">this</span>.addCurrentVertex(newCurrentVertex, <span class="keyword">this</span>.distance, nextNormal.mult(<span class="number">1</span>), <span class="number">0</span>, <span class="number">0</span>, <span class="literal">false</span>);
+                currentVertex = newCurrentVertex;
+            }
+        }
+
+        startOfLine = <span class="literal">false</span>;
+    }
+
+};
+
+<span class="comment">/**
+ * Add two vertices to the buffers.
+ *
+ * @param {Object} currentVertex the line vertex to add buffer vertices for
+ * @param {number} distance the distance from the beginning of the line to the vertex
+ * @param {number} endLeft extrude to shift the left vertex along the line
+ * @param {number} endRight extrude to shift the left vertex along the line
+ * @param {boolean} round whether this is a round cap
+ * @private
+ */</span>
+LineBucket.prototype.addCurrentVertex = <span class="keyword">function</span>(currentVertex, distance, normal, endLeft, endRight, round) {
+    <span class="keyword">var</span> tx = round ? <span class="number">1</span> : <span class="number">0</span>;
+    <span class="keyword">var</span> extrude;
+    <span class="keyword">var</span> layoutArrays = <span class="keyword">this</span>.arrayGroups.line[<span class="keyword">this</span>.arrayGroups.line.length - <span class="number">1</span>].layout;
+    <span class="keyword">var</span> vertexArray = layoutArrays.vertex;
+    <span class="keyword">var</span> elementArray = layoutArrays.element;
+
+    extrude = normal.clone();
+    <span class="keyword">if</span> (endLeft) extrude._sub(normal.perp()._mult(endLeft));
+    <span class="keyword">this</span>.e3 = <span class="keyword">this</span>.addLineVertex(vertexArray, currentVertex, extrude, tx, <span class="number">0</span>, endLeft, distance);
+    <span class="keyword">if</span> (<span class="keyword">this</span>.e1 >= <span class="number">0</span> &amp;&amp; <span class="keyword">this</span>.e2 >= <span class="number">0</span>) {
+        elementArray.emplaceBack(<span class="keyword">this</span>.e1, <span class="keyword">this</span>.e2, <span class="keyword">this</span>.e3);
+    }
+    <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e2;
+    <span class="keyword">this</span>.e2 = <span class="keyword">this</span>.e3;
+
+    extrude = normal.mult(-<span class="number">1</span>);
+    <span class="keyword">if</span> (endRight) extrude._sub(normal.perp()._mult(endRight));
+    <span class="keyword">this</span>.e3 = <span class="keyword">this</span>.addLineVertex(vertexArray, currentVertex, extrude, tx, <span class="number">1</span>, -endRight, distance);
+    <span class="keyword">if</span> (<span class="keyword">this</span>.e1 >= <span class="number">0</span> &amp;&amp; <span class="keyword">this</span>.e2 >= <span class="number">0</span>) {
+        elementArray.emplaceBack(<span class="keyword">this</span>.e1, <span class="keyword">this</span>.e2, <span class="keyword">this</span>.e3);
+    }
+    <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e2;
+    <span class="keyword">this</span>.e2 = <span class="keyword">this</span>.e3;
+
+    <span class="comment">// There is a maximum "distance along the line" that we can store in the buffers.</span>
+    <span class="comment">// When we get close to the distance, reset it to zero and add the vertex again with</span>
+    <span class="comment">// a distance of zero. The max distance is determined by the number of bits we allocate</span>
+    <span class="comment">// to `linesofar`.</span>
+    <span class="keyword">if</span> (distance > MAX_LINE_DISTANCE / <span class="number">2</span>) {
+        <span class="keyword">this</span>.distance = <span class="number">0</span>;
+        <span class="keyword">this</span>.addCurrentVertex(currentVertex, <span class="keyword">this</span>.distance, normal, endLeft, endRight, round);
+    }
+};
+
+<span class="comment">/**
+ * Add a single new vertex and a triangle using two previous vertices.
+ * This adds a pie slice triangle near a join to simulate round joins
+ *
+ * @param {Object} currentVertex the line vertex to add buffer vertices for
+ * @param {number} distance the distance from the beggining of the line to the vertex
+ * @param {Object} extrude the offset of the new vertex from the currentVertex
+ * @param {boolean} whether the line is turning left or right at this angle
+ * @private
+ */</span>
+LineBucket.prototype.addPieSliceVertex = <span class="keyword">function</span>(currentVertex, distance, extrude, lineTurnsLeft) {
+    <span class="keyword">var</span> ty = lineTurnsLeft ? <span class="number">1</span> : <span class="number">0</span>;
+    extrude = extrude.mult(lineTurnsLeft ? -<span class="number">1</span> : <span class="number">1</span>);
+    <span class="keyword">var</span> layoutArrays = <span class="keyword">this</span>.arrayGroups.line[<span class="keyword">this</span>.arrayGroups.line.length - <span class="number">1</span>].layout;
+    <span class="keyword">var</span> vertexArray = layoutArrays.vertex;
+    <span class="keyword">var</span> elementArray = layoutArrays.element;
+
+    <span class="keyword">this</span>.e3 = <span class="keyword">this</span>.addLineVertex(vertexArray, currentVertex, extrude, <span class="number">0</span>, ty, <span class="number">0</span>, distance);
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.e1 >= <span class="number">0</span> &amp;&amp; <span class="keyword">this</span>.e2 >= <span class="number">0</span>) {
+        elementArray.emplaceBack(<span class="keyword">this</span>.e1, <span class="keyword">this</span>.e2, <span class="keyword">this</span>.e3);
+    }
+
+    <span class="keyword">if</span> (lineTurnsLeft) {
+        <span class="keyword">this</span>.e2 = <span class="keyword">this</span>.e3;
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.e1 = <span class="keyword">this</span>.e3;
+    }
+};
+</code></pre>

@@ -1,0 +1,51 @@
+<h1>geojson-rewind</h1>
+<pre><code class="lang-js"><span class="keyword">var</span> geojsonArea = require(<span class="string">'geojson-area'</span>);
+
+module.exports = rewind;
+
+<span class="function"><span class="keyword">function</span> <span class="title">rewind</span><span class="params">(gj, outer)</span> {</span>
+    <span class="keyword">switch</span> ((gj &amp;&amp; gj.type) || <span class="literal">null</span>) {
+        <span class="keyword">case</span> <span class="string">'FeatureCollection'</span>:
+            gj.features = gj.features.map(curryOuter(rewind, outer));
+            <span class="keyword">return</span> gj;
+        <span class="keyword">case</span> <span class="string">'Feature'</span>:
+            gj.geometry = rewind(gj.geometry, outer);
+            <span class="keyword">return</span> gj;
+        <span class="keyword">case</span> <span class="string">'Polygon'</span>:
+        <span class="keyword">case</span> <span class="string">'MultiPolygon'</span>:
+            <span class="keyword">return</span> correct(gj, outer);
+        <span class="keyword">default</span>:
+            <span class="keyword">return</span> gj;
+    }
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">curryOuter</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">function</span>(_) { <span class="keyword">return</span> a(_, b); };
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">correct</span><span class="params">(_, outer)</span> {</span>
+    <span class="keyword">if</span> (_.type === <span class="string">'Polygon'</span>) {
+        _.coordinates = correctRings(_.coordinates, outer);
+    } <span class="keyword">else</span> <span class="keyword">if</span> (_.type === <span class="string">'MultiPolygon'</span>) {
+        _.coordinates = _.coordinates.map(curryOuter(correctRings, outer));
+    }
+    <span class="keyword">return</span> _;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">correctRings</span><span class="params">(_, outer)</span> {</span>
+    outer = !!outer;
+    _[<span class="number">0</span>] = wind(_[<span class="number">0</span>], !outer);
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">1</span>; i &lt; _.length; i++) {
+        _[i] = wind(_[i], outer);
+    }
+    <span class="keyword">return</span> _;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">wind</span><span class="params">(_, dir)</span> {</span>
+    <span class="keyword">return</span> cw(_) === dir ? _ : _.reverse();
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">cw</span><span class="params">(_)</span> {</span>
+    <span class="keyword">return</span> geojsonArea.ring(_) >= <span class="number">0</span>;
+}
+</code></pre>

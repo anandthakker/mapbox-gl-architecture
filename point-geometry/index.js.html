@@ -1,0 +1,133 @@
+<h1>point-geometry</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Point;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Point</span><span class="params">(x, y)</span> {</span>
+    <span class="keyword">this</span>.x = x;
+    <span class="keyword">this</span>.y = y;
+}
+
+Point.prototype = {
+    clone: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">new</span> Point(<span class="keyword">this</span>.x, <span class="keyword">this</span>.y); },
+
+    add:     <span class="keyword">function</span>(p) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._add(p);     },
+    sub:     <span class="keyword">function</span>(p) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._sub(p);     },
+    mult:    <span class="keyword">function</span>(k) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._mult(k);    },
+    div:     <span class="keyword">function</span>(k) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._div(k);     },
+    rotate:  <span class="keyword">function</span>(a) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._rotate(a);  },
+    matMult: <span class="keyword">function</span>(m) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._matMult(m); },
+    unit:    <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._unit(); },
+    perp:    <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._perp(); },
+    round:   <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._round(); },
+
+    mag: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> Math.sqrt(<span class="keyword">this</span>.x * <span class="keyword">this</span>.x + <span class="keyword">this</span>.y * <span class="keyword">this</span>.y);
+    },
+
+    equals: <span class="keyword">function</span>(p) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.x === p.x &amp;&amp;
+               <span class="keyword">this</span>.y === p.y;
+    },
+
+    dist: <span class="keyword">function</span>(p) {
+        <span class="keyword">return</span> Math.sqrt(<span class="keyword">this</span>.distSqr(p));
+    },
+
+    distSqr: <span class="keyword">function</span>(p) {
+        <span class="keyword">var</span> dx = p.x - <span class="keyword">this</span>.x,
+            dy = p.y - <span class="keyword">this</span>.y;
+        <span class="keyword">return</span> dx * dx + dy * dy;
+    },
+
+    angle: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> Math.atan2(<span class="keyword">this</span>.y, <span class="keyword">this</span>.x);
+    },
+
+    angleTo: <span class="keyword">function</span>(b) {
+        <span class="keyword">return</span> Math.atan2(<span class="keyword">this</span>.y - b.y, <span class="keyword">this</span>.x - b.x);
+    },
+
+    angleWith: <span class="keyword">function</span>(b) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.angleWithSep(b.x, b.y);
+    },
+
+    <span class="comment">// Find the angle of the two vectors, solving the formula for the cross product a x b = |a||b|sin(θ) for θ.</span>
+    angleWithSep: <span class="keyword">function</span>(x, y) {
+        <span class="keyword">return</span> Math.atan2(
+            <span class="keyword">this</span>.x * y - <span class="keyword">this</span>.y * x,
+            <span class="keyword">this</span>.x * x + <span class="keyword">this</span>.y * y);
+    },
+
+    _matMult: <span class="keyword">function</span>(m) {
+        <span class="keyword">var</span> x = m[<span class="number">0</span>] * <span class="keyword">this</span>.x + m[<span class="number">1</span>] * <span class="keyword">this</span>.y,
+            y = m[<span class="number">2</span>] * <span class="keyword">this</span>.x + m[<span class="number">3</span>] * <span class="keyword">this</span>.y;
+        <span class="keyword">this</span>.x = x;
+        <span class="keyword">this</span>.y = y;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _add: <span class="keyword">function</span>(p) {
+        <span class="keyword">this</span>.x += p.x;
+        <span class="keyword">this</span>.y += p.y;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _sub: <span class="keyword">function</span>(p) {
+        <span class="keyword">this</span>.x -= p.x;
+        <span class="keyword">this</span>.y -= p.y;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _mult: <span class="keyword">function</span>(k) {
+        <span class="keyword">this</span>.x *= k;
+        <span class="keyword">this</span>.y *= k;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _div: <span class="keyword">function</span>(k) {
+        <span class="keyword">this</span>.x /= k;
+        <span class="keyword">this</span>.y /= k;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _unit: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._div(<span class="keyword">this</span>.mag());
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _perp: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> y = <span class="keyword">this</span>.y;
+        <span class="keyword">this</span>.y = <span class="keyword">this</span>.x;
+        <span class="keyword">this</span>.x = -y;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _rotate: <span class="keyword">function</span>(angle) {
+        <span class="keyword">var</span> cos = Math.cos(angle),
+            sin = Math.sin(angle),
+            x = cos * <span class="keyword">this</span>.x - sin * <span class="keyword">this</span>.y,
+            y = sin * <span class="keyword">this</span>.x + cos * <span class="keyword">this</span>.y;
+        <span class="keyword">this</span>.x = x;
+        <span class="keyword">this</span>.y = y;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _round: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>.x = Math.round(<span class="keyword">this</span>.x);
+        <span class="keyword">this</span>.y = Math.round(<span class="keyword">this</span>.y);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    }
+};
+
+<span class="comment">// constructs Point from an array if necessary</span>
+Point.convert = <span class="function"><span class="keyword">function</span> <span class="params">(a)</span> {</span>
+    <span class="keyword">if</span> (a <span class="keyword">instanceof</span> Point) {
+        <span class="keyword">return</span> a;
+    }
+    <span class="keyword">if</span> (Array.isArray(a)) {
+        <span class="keyword">return</span> <span class="keyword">new</span> Point(a[<span class="number">0</span>], a[<span class="number">1</span>]);
+    }
+    <span class="keyword">return</span> a;
+};
+</code></pre>

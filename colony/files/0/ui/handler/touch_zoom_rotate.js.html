@@ -1,0 +1,209 @@
+<h1>touch_zoom_rotate.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>),
+    util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = TouchZoomRotateHandler;
+
+<span class="keyword">var</span> inertiaLinearity = <span class="number">0.15</span>,
+    inertiaEasing = util.bezier(<span class="number">0</span>, <span class="number">0</span>, inertiaLinearity, <span class="number">1</span>),
+    inertiaDeceleration = <span class="number">12</span>, <span class="comment">// scale / s^2</span>
+    inertiaMaxSpeed = <span class="number">2.5</span>, <span class="comment">// scale / s</span>
+    significantScaleThreshold = <span class="number">0.15</span>,
+    significantRotateThreshold = <span class="number">4</span>;
+
+
+<span class="comment">/**
+ * The `TouchZoomRotateHandler` allows a user to zoom and rotate the map by
+ * pinching on a touchscreen.
+ * @class TouchZoomRotateHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">TouchZoomRotateHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+TouchZoomRotateHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "pinch to rotate and zoom" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Enable the "pinch to rotate and zoom" interaction.
+     * @example
+     *   map.touchZoomRotate.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onStart, <span class="literal">false</span>);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "pinch to rotate and zoom" interaction.
+     * @example
+     *   map.touchZoomRotate.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onStart);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "pinch to rotate" interaction, leaving the "pinch to zoom"
+     * interaction enabled.
+     * @example
+     *   map.touchZoomRotate.disableRotation();
+     */</span>
+    disableRotation: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._rotationDisabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Enable the "pinch to rotate" interaction, undoing a call to
+     * `disableRotation`.
+     * @example
+     *   map.touchZoomRotate.enable();
+     *   map.touchZoomRotate.enableRotation();
+     */</span>
+    enableRotation: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._rotationDisabled = <span class="literal">false</span>;
+    },
+
+    _onStart: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (e.touches.length !== <span class="number">2</span>) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> p0 = DOM.mousePos(<span class="keyword">this</span>._el, e.touches[<span class="number">0</span>]),
+            p1 = DOM.mousePos(<span class="keyword">this</span>._el, e.touches[<span class="number">1</span>]);
+
+        <span class="keyword">this</span>._startVec = p0.sub(p1);
+        <span class="keyword">this</span>._startScale = <span class="keyword">this</span>._map.transform.scale;
+        <span class="keyword">this</span>._startBearing = <span class="keyword">this</span>._map.transform.bearing;
+        <span class="keyword">this</span>._gestureIntent = <span class="literal">undefined</span>;
+        <span class="keyword">this</span>._inertia = [];
+
+        document.addEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onMove, <span class="literal">false</span>);
+        document.addEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onEnd, <span class="literal">false</span>);
+    },
+
+    _onMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (e.touches.length !== <span class="number">2</span>) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> p0 = DOM.mousePos(<span class="keyword">this</span>._el, e.touches[<span class="number">0</span>]),
+            p1 = DOM.mousePos(<span class="keyword">this</span>._el, e.touches[<span class="number">1</span>]),
+            p = p0.add(p1).div(<span class="number">2</span>),
+            vec = p0.sub(p1),
+            scale = vec.mag() / <span class="keyword">this</span>._startVec.mag(),
+            bearing = <span class="keyword">this</span>._rotationDisabled ? <span class="number">0</span> : vec.angleWith(<span class="keyword">this</span>._startVec) * <span class="number">180</span> / Math.PI,
+            map = <span class="keyword">this</span>._map;
+
+        <span class="comment">// Determine 'intent' by whichever threshold is surpassed first,</span>
+        <span class="comment">// then keep that state for the duration of this gesture.</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._gestureIntent) {
+            <span class="keyword">var</span> scalingSignificantly = (Math.abs(<span class="number">1</span> - scale) > significantScaleThreshold),
+                rotatingSignificantly = (Math.abs(bearing) > significantRotateThreshold);
+
+            <span class="keyword">if</span> (rotatingSignificantly) {
+                <span class="keyword">this</span>._gestureIntent = <span class="string">'rotate'</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (scalingSignificantly) {
+                <span class="keyword">this</span>._gestureIntent = <span class="string">'zoom'</span>;
+            }
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>._gestureIntent) {
+                <span class="keyword">this</span>._startVec = vec;
+                <span class="keyword">this</span>._startScale = map.transform.scale;
+                <span class="keyword">this</span>._startBearing = map.transform.bearing;
+            }
+
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> param = { duration: <span class="number">0</span>, around: map.unproject(p) };
+
+            <span class="keyword">if</span> (<span class="keyword">this</span>._gestureIntent === <span class="string">'rotate'</span>) {
+                param.bearing = <span class="keyword">this</span>._startBearing + bearing;
+            }
+            <span class="keyword">if</span> (<span class="keyword">this</span>._gestureIntent === <span class="string">'zoom'</span> || <span class="keyword">this</span>._gestureIntent === <span class="string">'rotate'</span>) {
+                param.zoom = map.transform.scaleZoom(<span class="keyword">this</span>._startScale * scale);
+            }
+
+            map.stop();
+            <span class="keyword">this</span>._drainInertiaBuffer();
+            <span class="keyword">this</span>._inertia.push([Date.now(), scale, p]);
+
+            map.easeTo(param, { originalEvent: e });
+        }
+
+        e.preventDefault();
+    },
+
+    _onEnd: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        document.removeEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onMove);
+        document.removeEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onEnd);
+        <span class="keyword">this</span>._drainInertiaBuffer();
+
+        <span class="keyword">var</span> inertia = <span class="keyword">this</span>._inertia,
+            map = <span class="keyword">this</span>._map;
+
+        <span class="keyword">if</span> (inertia.length &lt; <span class="number">2</span>) {
+            map.snapToNorth({}, { originalEvent: e });
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">var</span> last = inertia[inertia.length - <span class="number">1</span>],
+            first = inertia[<span class="number">0</span>],
+            lastScale = map.transform.scaleZoom(<span class="keyword">this</span>._startScale * last[<span class="number">1</span>]),
+            firstScale = map.transform.scaleZoom(<span class="keyword">this</span>._startScale * first[<span class="number">1</span>]),
+            scaleOffset = lastScale - firstScale,
+            scaleDuration = (last[<span class="number">0</span>] - first[<span class="number">0</span>]) / <span class="number">1000</span>,
+            p = last[<span class="number">2</span>];
+
+        <span class="keyword">if</span> (scaleDuration === <span class="number">0</span> || lastScale === firstScale) {
+            map.snapToNorth({}, { originalEvent: e });
+            <span class="keyword">return</span>;
+        }
+
+        <span class="comment">// calculate scale/s speed and adjust for increased initial animation speed when easing</span>
+        <span class="keyword">var</span> speed = scaleOffset * inertiaLinearity / scaleDuration; <span class="comment">// scale/s</span>
+
+        <span class="keyword">if</span> (Math.abs(speed) > inertiaMaxSpeed) {
+            <span class="keyword">if</span> (speed > <span class="number">0</span>) {
+                speed = inertiaMaxSpeed;
+            } <span class="keyword">else</span> {
+                speed = -inertiaMaxSpeed;
+            }
+        }
+
+        <span class="keyword">var</span> duration = Math.abs(speed / (inertiaDeceleration * inertiaLinearity)) * <span class="number">1000</span>,
+            targetScale = lastScale + speed * duration / <span class="number">2000</span>;
+
+        <span class="keyword">if</span> (targetScale &lt; <span class="number">0</span>) {
+            targetScale = <span class="number">0</span>;
+        }
+
+        map.easeTo({
+            zoom: targetScale,
+            duration: duration,
+            easing: inertiaEasing,
+            around: map.unproject(p)
+        }, { originalEvent: e });
+    },
+
+    _drainInertiaBuffer: <span class="keyword">function</span>() {
+        <span class="keyword">var</span> inertia = <span class="keyword">this</span>._inertia,
+            now = Date.now(),
+            cutoff = <span class="number">160</span>; <span class="comment">// msec</span>
+
+        <span class="keyword">while</span> (inertia.length > <span class="number">2</span> &amp;&amp; now - inertia[<span class="number">0</span>][<span class="number">0</span>] > cutoff) inertia.shift();
+    }
+};
+</code></pre>

@@ -1,0 +1,124 @@
+<h1>keyboard.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = KeyboardHandler;
+
+
+<span class="keyword">var</span> panDelta = <span class="number">80</span>,
+    rotateDelta = <span class="number">2</span>,
+    pitchDelta = <span class="number">5</span>;
+
+<span class="comment">/**
+ * The `KeyboardHandler` allows a user to zoom, rotate, and pan the map using
+ * following keyboard shortcuts:
+ *  * `=` / `+`: increase zoom level by 1
+ *  * `Shift-=` / `Shift-+`: increase zoom level by 2
+ *  * `-`: decrease zoom level by 1
+ *  * `Shift--`: decrease zoom level by 2
+ *  * Arrow keys: pan by 80 pixels
+ *  * `Shift+⇢`: increase rotation by 2 degrees
+ *  * `Shift+⇠`: decrease rotation by 2 degrees
+ *  * `Shift+⇡`: increase pitch by 5 degrees
+ *  * `Shift+⇣`: decrease pitch by 5 degrees
+ * @class KeyboardHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">KeyboardHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    <span class="keyword">this</span>._onKeyDown = <span class="keyword">this</span>._onKeyDown.bind(<span class="keyword">this</span>);
+}
+
+KeyboardHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of keyboard interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Enable the ability to interact with the map using keyboard input.
+     * @example
+     * map.keyboard.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'keydown'</span>, <span class="keyword">this</span>._onKeyDown, <span class="literal">false</span>);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the ability to interact with the map using keyboard input.
+     * @example
+     * map.keyboard.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'keydown'</span>, <span class="keyword">this</span>._onKeyDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onKeyDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (e.altKey || e.ctrlKey || e.metaKey) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map,
+            eventData = { originalEvent: e };
+
+        <span class="keyword">switch</span> (e.keyCode) {
+        <span class="keyword">case</span> <span class="number">61</span>:
+        <span class="keyword">case</span> <span class="number">107</span>:
+        <span class="keyword">case</span> <span class="number">171</span>:
+        <span class="keyword">case</span> <span class="number">187</span>:
+            map.zoomTo(Math.round(map.getZoom()) + (e.shiftKey ? <span class="number">2</span> : <span class="number">1</span>), eventData);
+            <span class="keyword">break</span>;
+
+        <span class="keyword">case</span> <span class="number">189</span>:
+        <span class="keyword">case</span> <span class="number">109</span>:
+        <span class="keyword">case</span> <span class="number">173</span>:
+            map.zoomTo(Math.round(map.getZoom()) - (e.shiftKey ? <span class="number">2</span> : <span class="number">1</span>), eventData);
+            <span class="keyword">break</span>;
+
+        <span class="keyword">case</span> <span class="number">37</span>:
+            <span class="keyword">if</span> (e.shiftKey) {
+                map.easeTo({ bearing: map.getBearing() - rotateDelta }, eventData);
+            } <span class="keyword">else</span> {
+                e.preventDefault();
+                map.panBy([-panDelta, <span class="number">0</span>], eventData);
+            }
+            <span class="keyword">break</span>;
+
+        <span class="keyword">case</span> <span class="number">39</span>:
+            <span class="keyword">if</span> (e.shiftKey) {
+                map.easeTo({ bearing: map.getBearing() + rotateDelta }, eventData);
+            } <span class="keyword">else</span> {
+                e.preventDefault();
+                map.panBy([panDelta, <span class="number">0</span>], eventData);
+            }
+            <span class="keyword">break</span>;
+
+        <span class="keyword">case</span> <span class="number">38</span>:
+            <span class="keyword">if</span> (e.shiftKey) {
+                map.easeTo({ pitch: map.getPitch() + pitchDelta }, eventData);
+            } <span class="keyword">else</span> {
+                e.preventDefault();
+                map.panBy([<span class="number">0</span>, -panDelta], eventData);
+            }
+            <span class="keyword">break</span>;
+
+        <span class="keyword">case</span> <span class="number">40</span>:
+            <span class="keyword">if</span> (e.shiftKey) {
+                map.easeTo({ pitch: Math.max(map.getPitch() - pitchDelta, <span class="number">0</span>) }, eventData);
+            } <span class="keyword">else</span> {
+                e.preventDefault();
+                map.panBy([<span class="number">0</span>, panDelta], eventData);
+            }
+            <span class="keyword">break</span>;
+        }
+    }
+};
+</code></pre>

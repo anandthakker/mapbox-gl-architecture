@@ -1,0 +1,52 @@
+<h1>draw_circle.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+
+module.exports = drawCircles;
+
+<span class="function"><span class="keyword">function</span> <span class="title">drawCircles</span><span class="params">(painter, source, layer, coords)</span> {</span>
+    <span class="keyword">if</span> (painter.isOpaquePass) <span class="keyword">return</span>;
+
+    <span class="keyword">var</span> gl = painter.gl;
+
+    painter.setDepthSublayer(<span class="number">0</span>);
+    painter.depthMask(<span class="literal">false</span>);
+
+    <span class="comment">// Allow circles to be drawn across boundaries, so that</span>
+    <span class="comment">// large circles are not clipped to tiles</span>
+    gl.disable(gl.STENCIL_TEST);
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        <span class="keyword">var</span> coord = coords[i];
+
+        <span class="keyword">var</span> tile = source.getTile(coord);
+        <span class="keyword">var</span> bucket = tile.getBucket(layer);
+        <span class="keyword">if</span> (!bucket) <span class="keyword">continue</span>;
+        <span class="keyword">var</span> bufferGroups = bucket.bufferGroups.circle;
+        <span class="keyword">if</span> (!bufferGroups) <span class="keyword">continue</span>;
+
+        <span class="keyword">var</span> program = painter.useProgram(<span class="string">'circle'</span>, bucket.getProgramMacros(<span class="string">'circle'</span>, layer));
+
+        gl.uniform2fv(program.u_extrude_scale, painter.transform.pixelsToGLUnits);
+        gl.uniform1f(program.u_blur, layer.paint[<span class="string">'circle-blur'</span>]);
+        gl.uniform1f(program.u_devicepixelratio, browser.devicePixelRatio);
+        gl.uniform1f(program.u_opacity, layer.paint[<span class="string">'circle-opacity'</span>]);
+
+        gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, painter.translatePosMatrix(
+            coord.posMatrix,
+            tile,
+            layer.paint[<span class="string">'circle-translate'</span>],
+            layer.paint[<span class="string">'circle-translate-anchor'</span>]
+        ));
+
+        bucket.setUniforms(gl, <span class="string">'circle'</span>, program, layer, {zoom: painter.transform.zoom});
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; bufferGroups.length; k++) {
+            <span class="keyword">var</span> group = bufferGroups[k];
+            group.vaos[layer.id].bind(gl, program, group.layout.vertex, group.layout.element, group.paint[layer.id]);
+            gl.drawElements(gl.TRIANGLES, group.layout.element.length * <span class="number">3</span>, gl.UNSIGNED_SHORT, <span class="number">0</span>);
+        }
+    }
+}
+</code></pre>

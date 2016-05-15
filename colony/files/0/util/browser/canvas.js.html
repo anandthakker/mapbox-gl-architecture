@@ -1,0 +1,44 @@
+<h1>canvas.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util'</span>);
+<span class="keyword">var</span> isSupported = require(<span class="string">'mapbox-gl-js-supported'</span>);
+
+module.exports = Canvas;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Canvas</span><span class="params">(parent, container)</span> {</span>
+    <span class="keyword">this</span>.canvas = document.createElement(<span class="string">'canvas'</span>);
+
+    <span class="keyword">if</span> (parent &amp;&amp; container) {
+        <span class="keyword">this</span>.canvas.style.position = <span class="string">'absolute'</span>;
+        <span class="keyword">this</span>.canvas.classList.add(<span class="string">'mapboxgl-canvas'</span>);
+        <span class="keyword">this</span>.canvas.addEventListener(<span class="string">'webglcontextlost'</span>, parent._contextLost.bind(parent), <span class="literal">false</span>);
+        <span class="keyword">this</span>.canvas.addEventListener(<span class="string">'webglcontextrestored'</span>, parent._contextRestored.bind(parent), <span class="literal">false</span>);
+        <span class="keyword">this</span>.canvas.setAttribute(<span class="string">'tabindex'</span>, <span class="number">0</span>);
+        container.appendChild(<span class="keyword">this</span>.canvas);
+    }
+}
+
+Canvas.prototype.resize = <span class="keyword">function</span>(width, height) {
+    <span class="keyword">var</span> pixelRatio = window.devicePixelRatio || <span class="number">1</span>;
+
+    <span class="comment">// Request the required canvas size taking the pixelratio into account.</span>
+    <span class="keyword">this</span>.canvas.width = pixelRatio * width;
+    <span class="keyword">this</span>.canvas.height = pixelRatio * height;
+
+    <span class="comment">// Maintain the same canvas size, potentially downscaling it for HiDPI displays</span>
+    <span class="keyword">this</span>.canvas.style.width = width + <span class="string">'px'</span>;
+    <span class="keyword">this</span>.canvas.style.height = height + <span class="string">'px'</span>;
+};
+
+Canvas.prototype.getWebGLContext = <span class="keyword">function</span>(attributes) {
+    attributes = util.extend({}, attributes, isSupported.webGLContextAttributes);
+
+    <span class="keyword">return</span> <span class="keyword">this</span>.canvas.getContext(<span class="string">'webgl'</span>, attributes) ||
+        <span class="keyword">this</span>.canvas.getContext(<span class="string">'experimental-webgl'</span>, attributes);
+};
+
+Canvas.prototype.getElement = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">this</span>.canvas;
+};
+</code></pre>

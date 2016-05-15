@@ -1,0 +1,120 @@
+<h1>raster_tile_source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> Source = require(<span class="string">'./source'</span>);
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeTileURL;
+
+module.exports = RasterTileSource;
+
+<span class="function"><span class="keyword">function</span> <span class="title">RasterTileSource</span><span class="params">(options)</span> {</span>
+    util.extend(<span class="keyword">this</span>, util.pick(options, [<span class="string">'url'</span>, <span class="string">'tileSize'</span>]));
+
+    Source._loadTileJSON.call(<span class="keyword">this</span>, options);
+}
+
+RasterTileSource.prototype = util.inherit(Evented, {
+    minzoom: <span class="number">0</span>,
+    maxzoom: <span class="number">22</span>,
+    roundZoom: <span class="literal">true</span>,
+    tileSize: <span class="number">512</span>,
+    _loaded: <span class="literal">false</span>,
+
+    onAdd: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>.map = map;
+    },
+
+    loaded: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._pyramid &amp;&amp; <span class="keyword">this</span>._pyramid.loaded();
+    },
+
+    update: <span class="keyword">function</span>(transform) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._pyramid) {
+            <span class="keyword">this</span>._pyramid.update(<span class="keyword">this</span>.used, transform, <span class="keyword">this</span>.map.style.rasterFadeDuration);
+        }
+    },
+
+    reload: <span class="keyword">function</span>() {
+        <span class="comment">// noop</span>
+    },
+
+    serialize: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> {
+            type: <span class="string">'raster'</span>,
+            url: <span class="keyword">this</span>.url,
+            tileSize: <span class="keyword">this</span>.tileSize
+        };
+    },
+
+    getVisibleCoordinates: Source._getVisibleCoordinates,
+    getTile: Source._getTile,
+
+    _loadTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">var</span> url = normalizeURL(tile.coord.url(<span class="keyword">this</span>.tiles), <span class="keyword">this</span>.url, <span class="keyword">this</span>.tileSize);
+
+        tile.request = ajax.getImage(url, done.bind(<span class="keyword">this</span>));
+
+        <span class="function"><span class="keyword">function</span> <span class="title">done</span><span class="params">(err, img)</span> {</span>
+            <span class="keyword">delete</span> tile.request;
+
+            <span class="keyword">if</span> (tile.aborted)
+                <span class="keyword">return</span>;
+
+            <span class="keyword">if</span> (err) {
+                tile.errored = <span class="literal">true</span>;
+                <span class="keyword">this</span>.fire(<span class="string">'tile.error'</span>, {tile: tile, error: err});
+                <span class="keyword">return</span>;
+            }
+
+            <span class="keyword">var</span> gl = <span class="keyword">this</span>.map.painter.gl;
+            tile.texture = <span class="keyword">this</span>.map.painter.getTexture(img.width);
+            <span class="keyword">if</span> (tile.texture) {
+                gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+                gl.texSubImage2D(gl.TEXTURE_2D, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, gl.RGBA, gl.UNSIGNED_BYTE, img);
+            } <span class="keyword">else</span> {
+                tile.texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tile.texture);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, <span class="literal">true</span>);
+                gl.texImage2D(gl.TEXTURE_2D, <span class="number">0</span>, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                tile.texture.size = img.width;
+            }
+            gl.generateMipmap(gl.TEXTURE_2D);
+
+            tile.timeAdded = <span class="keyword">new</span> Date().getTime();
+            <span class="keyword">this</span>.map.animationLoop.set(<span class="keyword">this</span>.style.rasterFadeDuration);
+
+            tile.source = <span class="keyword">this</span>;
+            tile.loaded = <span class="literal">true</span>;
+
+            <span class="keyword">this</span>.fire(<span class="string">'tile.load'</span>, {tile: tile});
+        }
+    },
+
+    _abortTile: <span class="keyword">function</span>(tile) {
+        tile.aborted = <span class="literal">true</span>;
+
+        <span class="keyword">if</span> (tile.request) {
+            tile.request.abort();
+            <span class="keyword">delete</span> tile.request;
+        }
+    },
+
+    _addTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.add'</span>, {tile: tile});
+    },
+
+    _removeTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">this</span>.fire(<span class="string">'tile.remove'</span>, {tile: tile});
+    },
+
+    _unloadTile: <span class="keyword">function</span>(tile) {
+        <span class="keyword">if</span> (tile.texture) <span class="keyword">this</span>.map.painter.saveTexture(tile.texture);
+    }
+});
+</code></pre>

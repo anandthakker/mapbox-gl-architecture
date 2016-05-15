@@ -1,0 +1,337 @@
+<h1>style_layer.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> StyleTransition = require(<span class="string">'./style_transition'</span>);
+<span class="keyword">var</span> StyleDeclaration = require(<span class="string">'./style_declaration'</span>);
+<span class="keyword">var</span> styleSpec = require(<span class="string">'./style_spec'</span>);
+<span class="keyword">var</span> validateStyle = require(<span class="string">'./validate_style'</span>);
+<span class="keyword">var</span> parseColor = require(<span class="string">'./parse_color'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+
+module.exports = StyleLayer;
+
+<span class="keyword">var</span> TRANSITION_SUFFIX = <span class="string">'-transition'</span>;
+
+StyleLayer.create = <span class="keyword">function</span>(layer, refLayer) {
+    <span class="keyword">var</span> Classes = {
+        background: require(<span class="string">'./style_layer/background_style_layer'</span>),
+        circle: require(<span class="string">'./style_layer/circle_style_layer'</span>),
+        fill: require(<span class="string">'./style_layer/fill_style_layer'</span>),
+        line: require(<span class="string">'./style_layer/line_style_layer'</span>),
+        raster: require(<span class="string">'./style_layer/raster_style_layer'</span>),
+        symbol: require(<span class="string">'./style_layer/symbol_style_layer'</span>)
+    };
+    <span class="keyword">return</span> <span class="keyword">new</span> Classes[(refLayer || layer).type](layer, refLayer);
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">StyleLayer</span><span class="params">(layer, refLayer)</span> {</span>
+    <span class="keyword">this</span>.set(layer, refLayer);
+}
+
+StyleLayer.prototype = util.inherit(Evented, {
+
+    set: <span class="keyword">function</span>(layer, refLayer) {
+        <span class="keyword">this</span>.id = layer.id;
+        <span class="keyword">this</span>.ref = layer.ref;
+        <span class="keyword">this</span>.metadata = layer.metadata;
+        <span class="keyword">this</span>.type = (refLayer || layer).type;
+        <span class="keyword">this</span>.source = (refLayer || layer).source;
+        <span class="keyword">this</span>.sourceLayer = (refLayer || layer)[<span class="string">'source-layer'</span>];
+        <span class="keyword">this</span>.minzoom = (refLayer || layer).minzoom;
+        <span class="keyword">this</span>.maxzoom = (refLayer || layer).maxzoom;
+        <span class="keyword">this</span>.filter = (refLayer || layer).filter;
+
+        <span class="keyword">this</span>.paint = {};
+        <span class="keyword">this</span>.layout = {};
+
+        <span class="keyword">this</span>._paintSpecifications = styleSpec[<span class="string">'paint_'</span> + <span class="keyword">this</span>.type];
+        <span class="keyword">this</span>._layoutSpecifications = styleSpec[<span class="string">'layout_'</span> + <span class="keyword">this</span>.type];
+
+        <span class="keyword">this</span>._paintTransitions = {}; <span class="comment">// {[propertyName]: StyleTransition}</span>
+        <span class="keyword">this</span>._paintTransitionOptions = {}; <span class="comment">// {[className]: {[propertyName]: { duration:Number, delay:Number }}}</span>
+        <span class="keyword">this</span>._paintDeclarations = {}; <span class="comment">// {[className]: {[propertyName]: StyleDeclaration}}</span>
+        <span class="keyword">this</span>._layoutDeclarations = {}; <span class="comment">// {[propertyName]: StyleDeclaration}</span>
+        <span class="keyword">this</span>._layoutFunctions = {}; <span class="comment">// {[propertyName]: Boolean}</span>
+
+        <span class="keyword">var</span> paintName, layoutName;
+
+        <span class="comment">// Resolve paint declarations</span>
+        <span class="keyword">for</span> (<span class="keyword">var</span> key <span class="keyword">in</span> layer) {
+            <span class="keyword">var</span> match = key.match(<span class="regexp">/^paint(?:\.(.*))?$/</span>);
+            <span class="keyword">if</span> (match) {
+                <span class="keyword">var</span> klass = match[<span class="number">1</span>] || <span class="string">''</span>;
+                <span class="keyword">for</span> (paintName <span class="keyword">in</span> layer[key]) {
+                    <span class="keyword">this</span>.setPaintProperty(paintName, layer[key][paintName], klass);
+                }
+            }
+        }
+
+        <span class="comment">// Resolve layout declarations</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.ref) {
+            <span class="keyword">this</span>._layoutDeclarations = refLayer._layoutDeclarations;
+        } <span class="keyword">else</span> {
+            <span class="keyword">for</span> (layoutName <span class="keyword">in</span> layer.layout) {
+                <span class="keyword">this</span>.setLayoutProperty(layoutName, layer.layout[layoutName]);
+            }
+        }
+
+        <span class="comment">// set initial layout/paint values</span>
+        <span class="keyword">for</span> (paintName <span class="keyword">in</span> <span class="keyword">this</span>._paintSpecifications) {
+            <span class="keyword">this</span>.paint[paintName] = <span class="keyword">this</span>.getPaintValue(paintName);
+        }
+        <span class="keyword">for</span> (layoutName <span class="keyword">in</span> <span class="keyword">this</span>._layoutSpecifications) {
+            <span class="keyword">this</span>._updateLayoutValue(layoutName);
+        }
+    },
+
+    setLayoutProperty: <span class="keyword">function</span>(name, value) {
+
+        <span class="keyword">if</span> (value == <span class="literal">null</span>) {
+            <span class="keyword">delete</span> <span class="keyword">this</span>._layoutDeclarations[name];
+        } <span class="keyword">else</span> {
+            <span class="keyword">var</span> key = <span class="string">'layers.'</span> + <span class="keyword">this</span>.id + <span class="string">'.layout.'</span> + name;
+            <span class="keyword">if</span> (<span class="keyword">this</span>._handleErrors(validateStyle.layoutProperty, key, name, value)) <span class="keyword">return</span>;
+            <span class="keyword">this</span>._layoutDeclarations[name] = <span class="keyword">new</span> StyleDeclaration(<span class="keyword">this</span>._layoutSpecifications[name], value);
+        }
+        <span class="keyword">this</span>._updateLayoutValue(name);
+    },
+
+    getLayoutProperty: <span class="keyword">function</span>(name) {
+        <span class="keyword">return</span> (
+            <span class="keyword">this</span>._layoutDeclarations[name] &amp;&amp;
+            <span class="keyword">this</span>._layoutDeclarations[name].value
+        );
+    },
+
+    getLayoutValue: <span class="keyword">function</span>(name, globalProperties, featureProperties) {
+        <span class="keyword">var</span> specification = <span class="keyword">this</span>._layoutSpecifications[name];
+        <span class="keyword">var</span> declaration = <span class="keyword">this</span>._layoutDeclarations[name];
+
+        <span class="keyword">if</span> (declaration) {
+            <span class="keyword">return</span> declaration.calculate(globalProperties, featureProperties);
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> specification.<span class="keyword">default</span>;
+        }
+    },
+
+    setPaintProperty: <span class="keyword">function</span>(name, value, klass) {
+        <span class="keyword">var</span> validateStyleKey = <span class="string">'layers.'</span> + <span class="keyword">this</span>.id + (klass ? <span class="string">'["paint.'</span> + klass + <span class="string">'"].'</span> : <span class="string">'.paint.'</span>) + name;
+
+        <span class="keyword">if</span> (util.endsWith(name, TRANSITION_SUFFIX)) {
+            <span class="keyword">if</span> (!<span class="keyword">this</span>._paintTransitionOptions[klass || <span class="string">''</span>]) {
+                <span class="keyword">this</span>._paintTransitionOptions[klass || <span class="string">''</span>] = {};
+            }
+            <span class="keyword">if</span> (value === <span class="literal">null</span> || value === <span class="literal">undefined</span>) {
+                <span class="keyword">delete</span> <span class="keyword">this</span>._paintTransitionOptions[klass || <span class="string">''</span>][name];
+            } <span class="keyword">else</span> {
+                <span class="keyword">if</span> (<span class="keyword">this</span>._handleErrors(validateStyle.paintProperty, validateStyleKey, name, value)) <span class="keyword">return</span>;
+                <span class="keyword">this</span>._paintTransitionOptions[klass || <span class="string">''</span>][name] = value;
+            }
+        } <span class="keyword">else</span> {
+            <span class="keyword">if</span> (!<span class="keyword">this</span>._paintDeclarations[klass || <span class="string">''</span>]) {
+                <span class="keyword">this</span>._paintDeclarations[klass || <span class="string">''</span>] = {};
+            }
+            <span class="keyword">if</span> (value === <span class="literal">null</span> || value === <span class="literal">undefined</span>) {
+                <span class="keyword">delete</span> <span class="keyword">this</span>._paintDeclarations[klass || <span class="string">''</span>][name];
+            } <span class="keyword">else</span> {
+                <span class="keyword">if</span> (<span class="keyword">this</span>._handleErrors(validateStyle.paintProperty, validateStyleKey, name, value)) <span class="keyword">return</span>;
+                <span class="keyword">this</span>._paintDeclarations[klass || <span class="string">''</span>][name] = <span class="keyword">new</span> StyleDeclaration(<span class="keyword">this</span>._paintSpecifications[name], value);
+            }
+        }
+    },
+
+    getPaintProperty: <span class="keyword">function</span>(name, klass) {
+        klass = klass || <span class="string">''</span>;
+        <span class="keyword">if</span> (util.endsWith(name, TRANSITION_SUFFIX)) {
+            <span class="keyword">return</span> (
+                <span class="keyword">this</span>._paintTransitionOptions[klass] &amp;&amp;
+                <span class="keyword">this</span>._paintTransitionOptions[klass][name]
+            );
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> (
+                <span class="keyword">this</span>._paintDeclarations[klass] &amp;&amp;
+                <span class="keyword">this</span>._paintDeclarations[klass][name] &amp;&amp;
+                <span class="keyword">this</span>._paintDeclarations[klass][name].value
+            );
+        }
+    },
+
+    getPaintValue: <span class="keyword">function</span>(name, globalProperties, featureProperties) {
+        <span class="keyword">var</span> specification = <span class="keyword">this</span>._paintSpecifications[name];
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>._paintTransitions[name];
+
+        <span class="keyword">if</span> (transition) {
+            <span class="keyword">return</span> transition.calculate(globalProperties, featureProperties);
+        } <span class="keyword">else</span> <span class="keyword">if</span> (specification.type === <span class="string">'color'</span> &amp;&amp; specification.<span class="keyword">default</span>) {
+            <span class="keyword">return</span> parseColor(specification.<span class="keyword">default</span>);
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> specification.<span class="keyword">default</span>;
+        }
+    },
+
+    getPaintValueStopZoomLevels: <span class="keyword">function</span>(name) {
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>._paintTransitions[name];
+        <span class="keyword">if</span> (transition) {
+            <span class="keyword">return</span> transition.declaration.stopZoomLevels;
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> [];
+        }
+    },
+
+    getPaintInterpolationT: <span class="keyword">function</span>(name, zoom) {
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>._paintTransitions[name];
+        <span class="keyword">return</span> transition.declaration.calculateInterpolationT({ zoom: zoom });
+    },
+
+    isPaintValueFeatureConstant: <span class="keyword">function</span>(name) {
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>._paintTransitions[name];
+
+        <span class="keyword">if</span> (transition) {
+            <span class="keyword">return</span> transition.declaration.isFeatureConstant;
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    },
+
+    isPaintValueZoomConstant: <span class="keyword">function</span>(name) {
+        <span class="keyword">var</span> transition = <span class="keyword">this</span>._paintTransitions[name];
+
+        <span class="keyword">if</span> (transition) {
+            <span class="keyword">return</span> transition.declaration.isZoomConstant;
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    },
+
+
+    isHidden: <span class="keyword">function</span>(zoom) {
+        <span class="keyword">if</span> (<span class="keyword">this</span>.minzoom &amp;&amp; zoom &lt; <span class="keyword">this</span>.minzoom) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.maxzoom &amp;&amp; zoom >= <span class="keyword">this</span>.maxzoom) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.layout[<span class="string">'visibility'</span>] === <span class="string">'none'</span>) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.paint[<span class="keyword">this</span>.type + <span class="string">'-opacity'</span>] === <span class="number">0</span>) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">return</span> <span class="literal">false</span>;
+    },
+
+    updatePaintTransitions: <span class="keyword">function</span>(classes, options, globalOptions, animationLoop) {
+        <span class="keyword">var</span> declarations = util.extend({}, <span class="keyword">this</span>._paintDeclarations[<span class="string">''</span>]);
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; classes.length; i++) {
+            util.extend(declarations, <span class="keyword">this</span>._paintDeclarations[classes[i]]);
+        }
+
+        <span class="keyword">var</span> name;
+        <span class="keyword">for</span> (name <span class="keyword">in</span> declarations) { <span class="comment">// apply new declarations</span>
+            <span class="keyword">this</span>._applyPaintDeclaration(name, declarations[name], options, globalOptions, animationLoop);
+        }
+        <span class="keyword">for</span> (name <span class="keyword">in</span> <span class="keyword">this</span>._paintTransitions) {
+            <span class="keyword">if</span> (!(name <span class="keyword">in</span> declarations)) <span class="comment">// apply removed declarations</span>
+                <span class="keyword">this</span>._applyPaintDeclaration(name, <span class="literal">null</span>, options, globalOptions, animationLoop);
+        }
+    },
+
+    updatePaintTransition: <span class="keyword">function</span>(name, classes, options, globalOptions, animationLoop) {
+        <span class="keyword">var</span> declaration = <span class="keyword">this</span>._paintDeclarations[<span class="string">''</span>][name];
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; classes.length; i++) {
+            <span class="keyword">var</span> classPaintDeclarations = <span class="keyword">this</span>._paintDeclarations[classes[i]];
+            <span class="keyword">if</span> (classPaintDeclarations &amp;&amp; classPaintDeclarations[name]) {
+                declaration = classPaintDeclarations[name];
+            }
+        }
+        <span class="keyword">this</span>._applyPaintDeclaration(name, declaration, options, globalOptions, animationLoop);
+    },
+
+    <span class="comment">// update all zoom-dependent layout/paint values</span>
+    recalculate: <span class="keyword">function</span>(zoom, zoomHistory) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> paintName <span class="keyword">in</span> <span class="keyword">this</span>._paintTransitions) {
+            <span class="keyword">this</span>.paint[paintName] = <span class="keyword">this</span>.getPaintValue(paintName, {zoom: zoom, zoomHistory: zoomHistory});
+        }
+        <span class="keyword">for</span> (<span class="keyword">var</span> layoutName <span class="keyword">in</span> <span class="keyword">this</span>._layoutFunctions) {
+            <span class="keyword">this</span>.layout[layoutName] = <span class="keyword">this</span>.getLayoutValue(layoutName, {zoom: zoom, zoomHistory: zoomHistory});
+        }
+    },
+
+    serialize: <span class="keyword">function</span>(options) {
+        <span class="keyword">var</span> output = {
+            <span class="string">'id'</span>: <span class="keyword">this</span>.id,
+            <span class="string">'ref'</span>: <span class="keyword">this</span>.ref,
+            <span class="string">'metadata'</span>: <span class="keyword">this</span>.metadata,
+            <span class="string">'minzoom'</span>: <span class="keyword">this</span>.minzoom,
+            <span class="string">'maxzoom'</span>: <span class="keyword">this</span>.maxzoom
+        };
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> klass <span class="keyword">in</span> <span class="keyword">this</span>._paintDeclarations) {
+            <span class="keyword">var</span> key = klass === <span class="string">''</span> ? <span class="string">'paint'</span> : <span class="string">'paint.'</span> + klass;
+            output[key] = util.mapObject(<span class="keyword">this</span>._paintDeclarations[klass], getDeclarationValue);
+        }
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.ref || (options &amp;&amp; options.includeRefProperties)) {
+            util.extend(output, {
+                <span class="string">'type'</span>: <span class="keyword">this</span>.type,
+                <span class="string">'source'</span>: <span class="keyword">this</span>.source,
+                <span class="string">'source-layer'</span>: <span class="keyword">this</span>.sourceLayer,
+                <span class="string">'filter'</span>: <span class="keyword">this</span>.filter,
+                <span class="string">'layout'</span>: util.mapObject(<span class="keyword">this</span>._layoutDeclarations, getDeclarationValue)
+            });
+        }
+
+        <span class="keyword">return</span> util.filterObject(output, <span class="keyword">function</span>(value, key) {
+            <span class="keyword">return</span> value !== <span class="literal">undefined</span> &amp;&amp; !(key === <span class="string">'layout'</span> &amp;&amp; !Object.keys(value).length);
+        });
+    },
+
+    <span class="comment">// set paint transition based on a given paint declaration</span>
+    _applyPaintDeclaration: <span class="function"><span class="keyword">function</span> <span class="params">(name, declaration, options, globalOptions, animationLoop)</span> {</span>
+        <span class="keyword">var</span> oldTransition = options.transition ? <span class="keyword">this</span>._paintTransitions[name] : <span class="literal">undefined</span>;
+
+        <span class="keyword">if</span> (declaration === <span class="literal">null</span> || declaration === <span class="literal">undefined</span>) {
+            <span class="keyword">var</span> spec = <span class="keyword">this</span>._paintSpecifications[name];
+            declaration = <span class="keyword">new</span> StyleDeclaration(spec, spec.<span class="keyword">default</span>);
+        }
+
+        <span class="keyword">if</span> (oldTransition &amp;&amp; oldTransition.declaration.json === declaration.json) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> transitionOptions = util.extend({
+            duration: <span class="number">300</span>,
+            delay: <span class="number">0</span>
+        }, globalOptions, <span class="keyword">this</span>.getPaintProperty(name + TRANSITION_SUFFIX));
+
+        <span class="keyword">var</span> newTransition = <span class="keyword">this</span>._paintTransitions[name] =
+                <span class="keyword">new</span> StyleTransition(declaration, oldTransition, transitionOptions);
+
+        <span class="keyword">if</span> (!newTransition.instant()) {
+            newTransition.loopID = animationLoop.set(newTransition.endTime - Date.now());
+        }
+        <span class="keyword">if</span> (oldTransition) {
+            animationLoop.cancel(oldTransition.loopID);
+        }
+    },
+
+    <span class="comment">// update layout value if it's constant, or mark it as zoom-dependent</span>
+    _updateLayoutValue: <span class="keyword">function</span>(name) {
+        <span class="keyword">var</span> declaration = <span class="keyword">this</span>._layoutDeclarations[name];
+
+        <span class="keyword">if</span> (declaration &amp;&amp; declaration.isFunction) {
+            <span class="keyword">this</span>._layoutFunctions[name] = <span class="literal">true</span>;
+        } <span class="keyword">else</span> {
+            <span class="keyword">delete</span> <span class="keyword">this</span>._layoutFunctions[name];
+            <span class="keyword">this</span>.layout[name] = <span class="keyword">this</span>.getLayoutValue(name);
+        }
+    },
+
+    _handleErrors: <span class="keyword">function</span>(validate, key, name, value) {
+        <span class="keyword">return</span> validateStyle.emitErrors(<span class="keyword">this</span>, validate.call(validateStyle, {
+            key: key,
+            layerType: <span class="keyword">this</span>.type,
+            objectKey: name,
+            value: value,
+            styleSpec: styleSpec,
+            <span class="comment">// Workaround for https://github.com/mapbox/mapbox-gl-js/issues/2407</span>
+            style: {glyphs: <span class="literal">true</span>, sprite: <span class="literal">true</span>}
+        }));
+    }
+});
+
+<span class="function"><span class="keyword">function</span> <span class="title">getDeclarationValue</span><span class="params">(declaration)</span> {</span>
+    <span class="keyword">return</span> declaration.value;
+}
+</code></pre>

@@ -1,0 +1,96 @@
+<h1>vertex_array_object.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> assert = require(<span class="string">'assert'</span>);
+
+module.exports = VertexArrayObject;
+
+<span class="function"><span class="keyword">function</span> <span class="title">VertexArrayObject</span><span class="params">()</span> {</span>
+    <span class="keyword">this</span>.boundProgram = <span class="literal">null</span>;
+    <span class="keyword">this</span>.boundVertexBuffer = <span class="literal">null</span>;
+    <span class="keyword">this</span>.boundVertexBuffer2 = <span class="literal">null</span>;
+    <span class="keyword">this</span>.boundElementBuffer = <span class="literal">null</span>;
+    <span class="keyword">this</span>.vao = <span class="literal">null</span>;
+}
+
+<span class="keyword">var</span> reported = <span class="literal">false</span>;
+
+VertexArrayObject.prototype.bind = <span class="keyword">function</span>(gl, program, vertexBuffer, elementBuffer, vertexBuffer2) {
+
+    <span class="keyword">var</span> ext = gl.extVertexArrayObject;
+    <span class="keyword">if</span> (ext === <span class="literal">undefined</span>) {
+        ext = gl.extVertexArrayObject = gl.getExtension(<span class="string">"OES_vertex_array_object"</span>);
+    }
+
+    <span class="keyword">if</span> (ext) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.vao) <span class="keyword">this</span>.vao = ext.createVertexArrayOES();
+        ext.bindVertexArrayOES(<span class="keyword">this</span>.vao);
+    } <span class="keyword">else</span> <span class="keyword">if</span> (!reported) {
+        console.warn(<span class="string">'Not using VertexArrayObject extension.'</span>);
+        reported = <span class="literal">true</span>;
+    }
+
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.boundProgram) {
+
+        <span class="keyword">var</span> numPrevAttributes = ext ? <span class="number">0</span> : (gl.currentNumAttributes || <span class="number">0</span>);
+        <span class="keyword">var</span> numNextAttributes = program.numAttributes;
+        <span class="keyword">var</span> i;
+
+        <span class="comment">// Enable all attributes for the new program.</span>
+        <span class="keyword">for</span> (i = numPrevAttributes; i &lt; numNextAttributes; i++) {
+            gl.enableVertexAttribArray(i);
+        }
+
+        <span class="keyword">if</span> (!ext) {
+            <span class="comment">// Disable all attributes from the previous program that aren't used in</span>
+            <span class="comment">// the new program. Note: attribute indices are *not* program specific!</span>
+            <span class="comment">// WebGL breaks if you disable attribute 0. http://stackoverflow.com/questions/20305231</span>
+            assert(i > <span class="number">0</span>);
+            <span class="keyword">for</span> (i = numNextAttributes; i &lt; numPrevAttributes; i++) {
+                gl.disableVertexAttribArray(i);
+            }
+            gl.currentNumAttributes = numNextAttributes;
+        }
+
+        vertexBuffer.bind(gl);
+        vertexBuffer.setVertexAttribPointers(gl, program);
+        <span class="keyword">if</span> (vertexBuffer2) {
+            vertexBuffer2.bind(gl);
+            vertexBuffer2.setVertexAttribPointers(gl, program);
+        }
+        <span class="keyword">if</span> (elementBuffer) {
+            elementBuffer.bind(gl);
+        }
+
+        <span class="keyword">if</span> (ext) {
+            <span class="comment">// store the arguments so that we can verify them when the vao is bound again</span>
+            <span class="keyword">this</span>.boundProgram = program;
+            <span class="keyword">this</span>.boundVertexBuffer = vertexBuffer;
+            <span class="keyword">this</span>.boundVertexBuffer2 = vertexBuffer2;
+            <span class="keyword">this</span>.boundElementBuffer = elementBuffer;
+        }
+
+    } <span class="keyword">else</span> {
+        <span class="comment">// verify that bind was called with the same arguments</span>
+        assert(<span class="keyword">this</span>.boundProgram === program, <span class="string">'trying to bind a VAO to a different shader'</span>);
+        assert(<span class="keyword">this</span>.boundVertexBuffer === vertexBuffer, <span class="string">'trying to bind a VAO to a different vertex buffer'</span>);
+        assert(<span class="keyword">this</span>.boundVertexBuffer2 === vertexBuffer2, <span class="string">'trying to bind a VAO to a different vertex buffer'</span>);
+        assert(<span class="keyword">this</span>.boundElementBuffer === elementBuffer, <span class="string">'trying to bind a VAO to a different element buffer'</span>);
+    }
+};
+
+VertexArrayObject.prototype.unbind = <span class="keyword">function</span>(gl) {
+    <span class="keyword">var</span> ext = gl.extVertexArrayObject;
+    <span class="keyword">if</span> (ext) {
+        ext.bindVertexArrayOES(<span class="literal">null</span>);
+    }
+};
+
+VertexArrayObject.prototype.destroy = <span class="keyword">function</span>(gl) {
+    <span class="keyword">var</span> ext = gl.extVertexArrayObject;
+    <span class="keyword">if</span> (ext &amp;&amp; <span class="keyword">this</span>.vao) {
+        ext.deleteVertexArrayOES(<span class="keyword">this</span>.vao);
+        <span class="keyword">this</span>.vao = <span class="literal">null</span>;
+    }
+};
+</code></pre>

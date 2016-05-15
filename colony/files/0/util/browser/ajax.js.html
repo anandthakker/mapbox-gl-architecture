@@ -1,0 +1,90 @@
+<h1>util/browser/ajax.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+exports.getJSON = <span class="keyword">function</span>(url, callback) {
+    <span class="keyword">var</span> xhr = <span class="keyword">new</span> XMLHttpRequest();
+    xhr.open(<span class="string">'GET'</span>, url, <span class="literal">true</span>);
+    xhr.setRequestHeader(<span class="string">'Accept'</span>, <span class="string">'application/json'</span>);
+    xhr.onerror = <span class="keyword">function</span>(e) {
+        callback(e);
+    };
+    xhr.onload = <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (xhr.status >= <span class="number">200</span> &amp;&amp; xhr.status &lt; <span class="number">300</span> &amp;&amp; xhr.response) {
+            <span class="keyword">var</span> data;
+            <span class="keyword">try</span> {
+                data = JSON.parse(xhr.response);
+            } <span class="keyword">catch</span> (err) {
+                <span class="keyword">return</span> callback(err);
+            }
+            callback(<span class="literal">null</span>, data);
+        } <span class="keyword">else</span> {
+            callback(<span class="keyword">new</span> Error(xhr.statusText));
+        }
+    };
+    xhr.send();
+    <span class="keyword">return</span> xhr;
+};
+
+exports.getArrayBuffer = <span class="keyword">function</span>(url, callback) {
+    <span class="keyword">var</span> xhr = <span class="keyword">new</span> XMLHttpRequest();
+    xhr.open(<span class="string">'GET'</span>, url, <span class="literal">true</span>);
+    xhr.responseType = <span class="string">'arraybuffer'</span>;
+    xhr.onerror = <span class="keyword">function</span>(e) {
+        callback(e);
+    };
+    xhr.onload = <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (xhr.status >= <span class="number">200</span> &amp;&amp; xhr.status &lt; <span class="number">300</span> &amp;&amp; xhr.response) {
+            callback(<span class="literal">null</span>, xhr.response);
+        } <span class="keyword">else</span> {
+            callback(<span class="keyword">new</span> Error(xhr.statusText));
+        }
+    };
+    xhr.send();
+    <span class="keyword">return</span> xhr;
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">sameOrigin</span><span class="params">(url)</span> {</span>
+    <span class="keyword">var</span> a = document.createElement(<span class="string">'a'</span>);
+    a.href = url;
+    <span class="keyword">return</span> a.protocol === document.location.protocol &amp;&amp; a.host === document.location.host;
+}
+
+exports.getImage = <span class="keyword">function</span>(url, callback) {
+    <span class="keyword">return</span> exports.getArrayBuffer(url, <span class="keyword">function</span>(err, imgData) {
+        <span class="keyword">if</span> (err) <span class="keyword">return</span> callback(err);
+        <span class="keyword">var</span> img = <span class="keyword">new</span> Image();
+        img.onload = <span class="keyword">function</span>() {
+            callback(<span class="literal">null</span>, img);
+            (window.URL || window.webkitURL).revokeObjectURL(img.src);
+        };
+        <span class="keyword">var</span> blob = <span class="keyword">new</span> Blob([<span class="keyword">new</span> Uint8Array(imgData)], { type: <span class="string">'image/png'</span> });
+        img.src = (window.URL || window.webkitURL).createObjectURL(blob);
+        img.getData = <span class="keyword">function</span>() {
+            <span class="keyword">var</span> canvas = document.createElement(<span class="string">'canvas'</span>);
+            <span class="keyword">var</span> context = canvas.getContext(<span class="string">'2d'</span>);
+            canvas.width = img.width;
+            canvas.height = img.height;
+            context.drawImage(img, <span class="number">0</span>, <span class="number">0</span>);
+            <span class="keyword">return</span> context.getImageData(<span class="number">0</span>, <span class="number">0</span>, img.width, img.height).data;
+        };
+        <span class="keyword">return</span> img;
+    });
+};
+
+exports.getVideo = <span class="keyword">function</span>(urls, callback) {
+    <span class="keyword">var</span> video = document.createElement(<span class="string">'video'</span>);
+    video.onloadstart = <span class="keyword">function</span>() {
+        callback(<span class="literal">null</span>, video);
+    };
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; urls.length; i++) {
+        <span class="keyword">var</span> s = document.createElement(<span class="string">'source'</span>);
+        <span class="keyword">if</span> (!sameOrigin(urls[i])) {
+            video.crossOrigin = <span class="string">'Anonymous'</span>;
+        }
+        s.src = urls[i];
+        video.appendChild(s);
+    }
+    video.getData = <span class="keyword">function</span>() { <span class="keyword">return</span> video; };
+    <span class="keyword">return</span> video;
+};
+</code></pre>

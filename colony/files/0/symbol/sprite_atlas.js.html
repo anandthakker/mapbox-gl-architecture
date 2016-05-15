@@ -1,0 +1,232 @@
+<h1>sprite_atlas.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> ShelfPack = require(<span class="string">'shelf-pack'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+
+module.exports = SpriteAtlas;
+<span class="function"><span class="keyword">function</span> <span class="title">SpriteAtlas</span><span class="params">(width, height)</span> {</span>
+    <span class="keyword">this</span>.width = width;
+    <span class="keyword">this</span>.height = height;
+
+    <span class="keyword">this</span>.bin = <span class="keyword">new</span> ShelfPack(width, height);
+    <span class="keyword">this</span>.images = {};
+    <span class="keyword">this</span>.data = <span class="literal">false</span>;
+    <span class="keyword">this</span>.texture = <span class="number">0</span>; <span class="comment">// WebGL ID</span>
+    <span class="keyword">this</span>.filter = <span class="number">0</span>; <span class="comment">// WebGL ID</span>
+    <span class="keyword">this</span>.pixelRatio = <span class="number">1</span>;
+    <span class="keyword">this</span>.dirty = <span class="literal">true</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">copyBitmap</span><span class="params">(src, srcStride, srcX, srcY, dst, dstStride, dstX, dstY, width, height, wrap)</span> {</span>
+    <span class="keyword">var</span> srcI = srcY * srcStride + srcX;
+    <span class="keyword">var</span> dstI = dstY * dstStride + dstX;
+    <span class="keyword">var</span> x, y;
+
+    <span class="keyword">if</span> (wrap) {
+        <span class="comment">// add 1 pixel wrapped padding on each side of the image</span>
+        dstI -= dstStride;
+        <span class="keyword">for</span> (y = -<span class="number">1</span>; y &lt;= height; y++, srcI = ((y + height) % height + srcY) * srcStride + srcX, dstI += dstStride) {
+            <span class="keyword">for</span> (x = -<span class="number">1</span>; x &lt;= width; x++) {
+                dst[dstI + x] = src[srcI + ((x + width) % width)];
+            }
+        }
+
+    } <span class="keyword">else</span> {
+        <span class="keyword">for</span> (y = <span class="number">0</span>; y &lt; height; y++, srcI += srcStride, dstI += dstStride) {
+            <span class="keyword">for</span> (x = <span class="number">0</span>; x &lt; width; x++) {
+                dst[dstI + x] = src[srcI + x];
+            }
+        }
+    }
+}
+
+SpriteAtlas.prototype.allocateImage = <span class="keyword">function</span>(pixelWidth, pixelHeight) {
+
+    pixelWidth = pixelWidth / <span class="keyword">this</span>.pixelRatio;
+    pixelHeight = pixelHeight / <span class="keyword">this</span>.pixelRatio;
+
+    <span class="comment">// Increase to next number divisible by 4, but at least 1.</span>
+    <span class="comment">// This is so we can scale down the texture coordinates and pack them</span>
+    <span class="comment">// into 2 bytes rather than 4 bytes.</span>
+    <span class="comment">// Pad icons to prevent them from polluting neighbours during linear interpolation</span>
+    <span class="keyword">var</span> padding = <span class="number">2</span>;
+    <span class="keyword">var</span> packWidth = pixelWidth + padding + (<span class="number">4</span> - (pixelWidth + padding) % <span class="number">4</span>);
+    <span class="keyword">var</span> packHeight = pixelHeight + padding + (<span class="number">4</span> - (pixelHeight + padding) % <span class="number">4</span>);<span class="comment">// + 4;</span>
+
+    <span class="keyword">var</span> rect = <span class="keyword">this</span>.bin.packOne(packWidth, packHeight);
+    <span class="keyword">if</span> (!rect) {
+        console.warn(<span class="string">'SpriteAtlas out of space.'</span>);
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">return</span> rect;
+};
+
+SpriteAtlas.prototype.getImage = <span class="keyword">function</span>(name, wrap) {
+    <span class="keyword">if</span> (<span class="keyword">this</span>.images[name]) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.images[name];
+    }
+
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.sprite) {
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> pos = <span class="keyword">this</span>.sprite.getSpritePosition(name);
+    <span class="keyword">if</span> (!pos.width || !pos.height) {
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> rect = <span class="keyword">this</span>.allocateImage(pos.width, pos.height);
+    <span class="keyword">if</span> (!rect) {
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> image = <span class="keyword">new</span> AtlasImage(rect, pos.width / pos.pixelRatio, pos.height / pos.pixelRatio, pos.sdf, pos.pixelRatio / <span class="keyword">this</span>.pixelRatio);
+    <span class="keyword">this</span>.images[name] = image;
+
+    <span class="keyword">this</span>.copy(rect, pos, wrap);
+
+    <span class="keyword">return</span> image;
+};
+
+
+<span class="comment">// Return position of a repeating fill pattern.</span>
+SpriteAtlas.prototype.getPosition = <span class="keyword">function</span>(name, repeating) {
+    <span class="keyword">var</span> image = <span class="keyword">this</span>.getImage(name, repeating);
+    <span class="keyword">var</span> rect = image &amp;&amp; image.rect;
+
+    <span class="keyword">if</span> (!rect) {
+        <span class="keyword">return</span> <span class="literal">null</span>;
+    }
+
+    <span class="keyword">var</span> width = image.width * image.pixelRatio;
+    <span class="keyword">var</span> height = image.height * image.pixelRatio;
+    <span class="keyword">var</span> padding = <span class="number">1</span>;
+
+    <span class="keyword">return</span> {
+        size: [image.width, image.height],
+        tl: [(rect.x + padding)         / <span class="keyword">this</span>.width, (rect.y + padding)          / <span class="keyword">this</span>.height],
+        br: [(rect.x + padding + width) / <span class="keyword">this</span>.width, (rect.y + padding + height) / <span class="keyword">this</span>.height]
+    };
+};
+
+
+SpriteAtlas.prototype.allocate = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.data) {
+        <span class="keyword">var</span> w = Math.floor(<span class="keyword">this</span>.width * <span class="keyword">this</span>.pixelRatio);
+        <span class="keyword">var</span> h = Math.floor(<span class="keyword">this</span>.height * <span class="keyword">this</span>.pixelRatio);
+        <span class="keyword">this</span>.data = <span class="keyword">new</span> Uint32Array(w * h);
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; <span class="keyword">this</span>.data.length; i++) {
+            <span class="keyword">this</span>.data[i] = <span class="number">0</span>;
+        }
+    }
+};
+
+
+SpriteAtlas.prototype.copy = <span class="keyword">function</span>(dst, src, wrap) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.sprite.img.data) <span class="keyword">return</span>;
+    <span class="keyword">var</span> srcImg = <span class="keyword">new</span> Uint32Array(<span class="keyword">this</span>.sprite.img.data.buffer);
+
+    <span class="keyword">this</span>.allocate();
+    <span class="keyword">var</span> dstImg = <span class="keyword">this</span>.data;
+
+    <span class="keyword">var</span> padding = <span class="number">1</span>;
+
+    copyBitmap(
+        <span class="comment">/* source buffer */</span>  srcImg,
+        <span class="comment">/* source stride */</span>  <span class="keyword">this</span>.sprite.img.width,
+        <span class="comment">/* source x */</span>       src.x,
+        <span class="comment">/* source y */</span>       src.y,
+        <span class="comment">/* dest buffer */</span>    dstImg,
+        <span class="comment">/* dest stride */</span>    <span class="keyword">this</span>.width * <span class="keyword">this</span>.pixelRatio,
+        <span class="comment">/* dest x */</span>         (dst.x + padding) * <span class="keyword">this</span>.pixelRatio,
+        <span class="comment">/* dest y */</span>         (dst.y + padding) * <span class="keyword">this</span>.pixelRatio,
+        <span class="comment">/* icon dimension */</span> src.width,
+        <span class="comment">/* icon dimension */</span> src.height,
+        <span class="comment">/* wrap */</span> wrap
+    );
+
+    <span class="keyword">this</span>.dirty = <span class="literal">true</span>;
+};
+
+SpriteAtlas.prototype.setSprite = <span class="keyword">function</span>(sprite) {
+    <span class="keyword">if</span> (sprite) {
+        <span class="keyword">this</span>.pixelRatio = browser.devicePixelRatio > <span class="number">1</span> ? <span class="number">2</span> : <span class="number">1</span>;
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.canvas) {
+            <span class="keyword">this</span>.canvas.width = <span class="keyword">this</span>.width * <span class="keyword">this</span>.pixelRatio;
+            <span class="keyword">this</span>.canvas.height = <span class="keyword">this</span>.height * <span class="keyword">this</span>.pixelRatio;
+        }
+    }
+    <span class="keyword">this</span>.sprite = sprite;
+};
+
+SpriteAtlas.prototype.addIcons = <span class="keyword">function</span>(icons, callback) {
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; icons.length; i++) {
+        <span class="keyword">this</span>.getImage(icons[i]);
+    }
+
+    callback(<span class="literal">null</span>, <span class="keyword">this</span>.images);
+};
+
+SpriteAtlas.prototype.bind = <span class="keyword">function</span>(gl, linear) {
+    <span class="keyword">var</span> first = <span class="literal">false</span>;
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.texture) {
+        <span class="keyword">this</span>.texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        first = <span class="literal">true</span>;
+    } <span class="keyword">else</span> {
+        gl.bindTexture(gl.TEXTURE_2D, <span class="keyword">this</span>.texture);
+    }
+
+    <span class="keyword">var</span> filterVal = linear ? gl.LINEAR : gl.NEAREST;
+    <span class="keyword">if</span> (filterVal !== <span class="keyword">this</span>.filter) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filterVal);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filterVal);
+        <span class="keyword">this</span>.filter = filterVal;
+    }
+
+    <span class="keyword">if</span> (<span class="keyword">this</span>.dirty) {
+        <span class="keyword">this</span>.allocate();
+
+        <span class="keyword">if</span> (first) {
+            gl.texImage2D(
+                gl.TEXTURE_2D, <span class="comment">// enum target</span>
+                <span class="number">0</span>, <span class="comment">// ind level</span>
+                gl.RGBA, <span class="comment">// ind internalformat</span>
+                <span class="keyword">this</span>.width * <span class="keyword">this</span>.pixelRatio, <span class="comment">// GLsizei width</span>
+                <span class="keyword">this</span>.height * <span class="keyword">this</span>.pixelRatio, <span class="comment">// GLsizei height</span>
+                <span class="number">0</span>, <span class="comment">// ind border</span>
+                gl.RGBA, <span class="comment">// enum format</span>
+                gl.UNSIGNED_BYTE, <span class="comment">// enum type</span>
+                <span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.data.buffer) <span class="comment">// Object data</span>
+            );
+        } <span class="keyword">else</span> {
+            gl.texSubImage2D(
+                gl.TEXTURE_2D, <span class="comment">// enum target</span>
+                <span class="number">0</span>, <span class="comment">// int level</span>
+                <span class="number">0</span>, <span class="comment">// int xoffset</span>
+                <span class="number">0</span>, <span class="comment">// int yoffset</span>
+                <span class="keyword">this</span>.width * <span class="keyword">this</span>.pixelRatio, <span class="comment">// long width</span>
+                <span class="keyword">this</span>.height * <span class="keyword">this</span>.pixelRatio, <span class="comment">// long height</span>
+                gl.RGBA, <span class="comment">// enum format</span>
+                gl.UNSIGNED_BYTE, <span class="comment">// enum type</span>
+                <span class="keyword">new</span> Uint8Array(<span class="keyword">this</span>.data.buffer) <span class="comment">// Object pixels</span>
+            );
+        }
+
+        <span class="keyword">this</span>.dirty = <span class="literal">false</span>;
+    }
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">AtlasImage</span><span class="params">(rect, width, height, sdf, pixelRatio)</span> {</span>
+    <span class="keyword">this</span>.rect = rect;
+    <span class="keyword">this</span>.width = width;
+    <span class="keyword">this</span>.height = height;
+    <span class="keyword">this</span>.sdf = sdf;
+    <span class="keyword">this</span>.pixelRatio = pixelRatio;
+}
+</code></pre>

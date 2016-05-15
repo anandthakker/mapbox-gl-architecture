@@ -1,0 +1,79 @@
+<h1>coordinate.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Coordinate;
+
+<span class="comment">/**
+ * A coordinate is a column, row, zoom combination, often used
+ * as the data component of a tile.
+ *
+ * @param {number} column
+ * @param {number} row
+ * @param {number} zoom
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Coordinate</span><span class="params">(column, row, zoom)</span> {</span>
+    <span class="keyword">this</span>.column = column;
+    <span class="keyword">this</span>.row = row;
+    <span class="keyword">this</span>.zoom = zoom;
+}
+
+Coordinate.prototype = {
+
+    <span class="comment">/**
+     * Create a clone of this coordinate that can be mutated without
+     * changing the original coordinate
+     *
+     * @returns {Coordinate} clone
+     * @private
+     * var coord = new Coordinate(0, 0, 0);
+     * var c2 = coord.clone();
+     * // since coord is cloned, modifying a property of c2 does
+     * // not modify it.
+     * c2.zoom = 2;
+     */</span>
+    clone: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">new</span> Coordinate(<span class="keyword">this</span>.column, <span class="keyword">this</span>.row, <span class="keyword">this</span>.zoom);
+    },
+
+    <span class="comment">/**
+     * Zoom this coordinate to a given zoom level. This returns a new
+     * coordinate object, not mutating the old one.
+     *
+     * @param {number} zoom
+     * @returns {Coordinate} zoomed coordinate
+     * @private
+     * @example
+     * var coord = new Coordinate(0, 0, 0);
+     * var c2 = coord.zoomTo(1);
+     * c2 // equals new Coordinate(0, 0, 1);
+     */</span>
+    zoomTo: <span class="keyword">function</span>(zoom) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._zoomTo(zoom); },
+
+    <span class="comment">/**
+     * Subtract the column and row values of this coordinate from those
+     * of another coordinate. The other coordinat will be zoomed to the
+     * same level as `this` before the subtraction occurs
+     *
+     * @param {Coordinate} c other coordinate
+     * @returns {Coordinate} result
+     * @private
+     */</span>
+    sub: <span class="keyword">function</span>(c) { <span class="keyword">return</span> <span class="keyword">this</span>.clone()._sub(c); },
+
+    _zoomTo: <span class="keyword">function</span>(zoom) {
+        <span class="keyword">var</span> scale = Math.pow(<span class="number">2</span>, zoom - <span class="keyword">this</span>.zoom);
+        <span class="keyword">this</span>.column *= scale;
+        <span class="keyword">this</span>.row *= scale;
+        <span class="keyword">this</span>.zoom = zoom;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _sub: <span class="keyword">function</span>(c) {
+        c = c.zoomTo(<span class="keyword">this</span>.zoom);
+        <span class="keyword">this</span>.column -= c.column;
+        <span class="keyword">this</span>.row -= c.row;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    }
+};
+</code></pre>

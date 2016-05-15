@@ -1,0 +1,195 @@
+<h1>source.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> ajax = require(<span class="string">'../util/ajax'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> TilePyramid = require(<span class="string">'./tile_pyramid'</span>);
+<span class="keyword">var</span> normalizeURL = require(<span class="string">'../util/mapbox'</span>).normalizeSourceURL;
+<span class="keyword">var</span> TileCoord = require(<span class="string">'./tile_coord'</span>);
+
+exports._loadTileJSON = <span class="keyword">function</span>(options) {
+    <span class="keyword">var</span> loaded = <span class="keyword">function</span>(err, tileJSON) {
+        <span class="keyword">if</span> (err) {
+            <span class="keyword">this</span>.fire(<span class="string">'error'</span>, {error: err});
+            <span class="keyword">return</span>;
+        }
+
+        util.extend(<span class="keyword">this</span>, util.pick(tileJSON,
+            [<span class="string">'tiles'</span>, <span class="string">'minzoom'</span>, <span class="string">'maxzoom'</span>, <span class="string">'attribution'</span>]));
+
+        <span class="keyword">if</span> (tileJSON.vector_layers) {
+            <span class="keyword">this</span>.vectorLayers = tileJSON.vector_layers;
+            <span class="keyword">this</span>.vectorLayerIds = <span class="keyword">this</span>.vectorLayers.map(<span class="keyword">function</span>(layer) { <span class="keyword">return</span> layer.id; });
+        }
+
+        <span class="keyword">this</span>._pyramid = <span class="keyword">new</span> TilePyramid({
+            tileSize: <span class="keyword">this</span>.tileSize,
+            minzoom: <span class="keyword">this</span>.minzoom,
+            maxzoom: <span class="keyword">this</span>.maxzoom,
+            roundZoom: <span class="keyword">this</span>.roundZoom,
+            reparseOverscaled: <span class="keyword">this</span>.reparseOverscaled,
+            load: <span class="keyword">this</span>._loadTile.bind(<span class="keyword">this</span>),
+            abort: <span class="keyword">this</span>._abortTile.bind(<span class="keyword">this</span>),
+            unload: <span class="keyword">this</span>._unloadTile.bind(<span class="keyword">this</span>),
+            add: <span class="keyword">this</span>._addTile.bind(<span class="keyword">this</span>),
+            remove: <span class="keyword">this</span>._removeTile.bind(<span class="keyword">this</span>),
+            redoPlacement: <span class="keyword">this</span>._redoTilePlacement ? <span class="keyword">this</span>._redoTilePlacement.bind(<span class="keyword">this</span>) : <span class="literal">undefined</span>
+        });
+
+        <span class="keyword">this</span>.fire(<span class="string">'load'</span>);
+    }.bind(<span class="keyword">this</span>);
+
+    <span class="keyword">if</span> (options.url) {
+        ajax.getJSON(normalizeURL(options.url), loaded);
+    } <span class="keyword">else</span> {
+        browser.frame(loaded.bind(<span class="keyword">this</span>, <span class="literal">null</span>, options));
+    }
+};
+
+exports.redoPlacement = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>._pyramid) {
+        <span class="keyword">return</span>;
+    }
+
+    <span class="keyword">var</span> ids = <span class="keyword">this</span>._pyramid.orderedIDs();
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; ids.length; i++) {
+        <span class="keyword">var</span> tile = <span class="keyword">this</span>._pyramid.getTile(ids[i]);
+        <span class="keyword">this</span>._redoTilePlacement(tile);
+    }
+};
+
+exports._getTile = <span class="keyword">function</span>(coord) {
+    <span class="keyword">return</span> <span class="keyword">this</span>._pyramid.getTile(coord.id);
+};
+
+exports._getVisibleCoordinates = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>._pyramid) <span class="keyword">return</span> [];
+    <span class="keyword">else</span> <span class="keyword">return</span> <span class="keyword">this</span>._pyramid.renderedIDs().map(TileCoord.fromID);
+};
+
+<span class="function"><span class="keyword">function</span> <span class="title">sortTilesIn</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">var</span> coordA = a.tile.coord;
+    <span class="keyword">var</span> coordB = b.tile.coord;
+    <span class="keyword">return</span> (coordA.z - coordB.z) || (coordA.y - coordB.y) || (coordA.x - coordB.x);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">mergeRenderedFeatureLayers</span><span class="params">(tiles)</span> {</span>
+    <span class="keyword">var</span> result = tiles[<span class="number">0</span>] || {};
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">1</span>; i &lt; tiles.length; i++) {
+        <span class="keyword">var</span> tile = tiles[i];
+        <span class="keyword">for</span> (<span class="keyword">var</span> layerID <span class="keyword">in</span> tile) {
+            <span class="keyword">var</span> tileFeatures = tile[layerID];
+            <span class="keyword">var</span> resultFeatures = result[layerID];
+            <span class="keyword">if</span> (resultFeatures === <span class="literal">undefined</span>) {
+                resultFeatures = result[layerID] = tileFeatures;
+            } <span class="keyword">else</span> {
+                <span class="keyword">for</span> (<span class="keyword">var</span> f = <span class="number">0</span>; f &lt; tileFeatures.length; f++) {
+                    resultFeatures.push(tileFeatures[f]);
+                }
+            }
+        }
+    }
+    <span class="keyword">return</span> result;
+}
+
+exports._queryRenderedVectorFeatures = <span class="keyword">function</span>(queryGeometry, params, zoom, bearing) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>._pyramid)
+        <span class="keyword">return</span> {};
+
+    <span class="keyword">var</span> tilesIn = <span class="keyword">this</span>._pyramid.tilesIn(queryGeometry);
+
+    tilesIn.sort(sortTilesIn);
+
+    <span class="keyword">var</span> styleLayers = <span class="keyword">this</span>.map.style._layers;
+
+    <span class="keyword">var</span> renderedFeatureLayers = [];
+    <span class="keyword">for</span> (<span class="keyword">var</span> r = <span class="number">0</span>; r &lt; tilesIn.length; r++) {
+        <span class="keyword">var</span> tileIn = tilesIn[r];
+        <span class="keyword">if</span> (!tileIn.tile.featureIndex) <span class="keyword">continue</span>;
+
+        renderedFeatureLayers.push(tileIn.tile.featureIndex.query({
+            queryGeometry: tileIn.queryGeometry,
+            scale: tileIn.scale,
+            tileSize: tileIn.tile.tileSize,
+            bearing: bearing,
+            params: params
+        }, styleLayers));
+    }
+    <span class="keyword">return</span> mergeRenderedFeatureLayers(renderedFeatureLayers);
+};
+
+exports._querySourceFeatures = <span class="keyword">function</span>(params) {
+    <span class="keyword">if</span> (!<span class="keyword">this</span>._pyramid) {
+        <span class="keyword">return</span> [];
+    }
+
+    <span class="keyword">var</span> pyramid = <span class="keyword">this</span>._pyramid;
+    <span class="keyword">var</span> tiles = pyramid.renderedIDs().map(<span class="keyword">function</span>(id) {
+        <span class="keyword">return</span> pyramid.getTile(id);
+    });
+
+    <span class="keyword">var</span> result = [];
+
+    <span class="keyword">var</span> dataTiles = {};
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; tiles.length; i++) {
+        <span class="keyword">var</span> tile = tiles[i];
+        <span class="keyword">var</span> dataID = <span class="keyword">new</span> TileCoord(Math.min(tile.sourceMaxZoom, tile.coord.z), tile.coord.x, tile.coord.y, <span class="number">0</span>).id;
+        <span class="keyword">if</span> (!dataTiles[dataID]) {
+            dataTiles[dataID] = <span class="literal">true</span>;
+            tile.querySourceFeatures(result, params);
+        }
+    }
+
+    <span class="keyword">return</span> result;
+};
+
+<span class="comment">/*
+ * Create a tiled data source instance given an options object
+ *
+ * @param {Object} options
+ * @param {string} options.type Either `raster` or `vector`.
+ * @param {string} options.url A tile source URL. This should either be `mapbox://{mapid}` or a full `http[s]` url that points to a TileJSON endpoint.
+ * @param {Array} options.tiles An array of tile sources. If `url` is not specified, `tiles` can be used instead to specify tile sources, as in the TileJSON spec. Other TileJSON keys such as `minzoom` and `maxzoom` can be specified in a source object if `tiles` is used.
+ * @param {string} options.id An optional `id` to assign to the source
+ * @param {number} [options.tileSize=512] Optional tile size (width and height in pixels, assuming tiles are square). This option is only configurable for raster sources
+ * @example
+ * var sourceObj = new mapboxgl.Source.create({
+ *    type: 'vector',
+ *    url: 'mapbox://mapbox.mapbox-streets-v5'
+ * });
+ * map.addSource('some id', sourceObj); // add
+ * map.removeSource('some id');  // remove
+ */</span>
+exports.create = <span class="keyword">function</span>(source) {
+    <span class="comment">// This is not at file scope in order to avoid a circular require.</span>
+    <span class="keyword">var</span> sources = {
+        vector: require(<span class="string">'./vector_tile_source'</span>),
+        raster: require(<span class="string">'./raster_tile_source'</span>),
+        geojson: require(<span class="string">'./geojson_source'</span>),
+        video: require(<span class="string">'./video_source'</span>),
+        image: require(<span class="string">'./image_source'</span>)
+    };
+
+    <span class="keyword">return</span> exports.is(source) ? source : <span class="keyword">new</span> sources[source.type](source);
+};
+
+exports.is = <span class="keyword">function</span>(source) {
+    <span class="comment">// This is not at file scope in order to avoid a circular require.</span>
+    <span class="keyword">var</span> sources = {
+        vector: require(<span class="string">'./vector_tile_source'</span>),
+        raster: require(<span class="string">'./raster_tile_source'</span>),
+        geojson: require(<span class="string">'./geojson_source'</span>),
+        video: require(<span class="string">'./video_source'</span>),
+        image: require(<span class="string">'./image_source'</span>)
+    };
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> type <span class="keyword">in</span> sources) {
+        <span class="keyword">if</span> (source <span class="keyword">instanceof</span> sources[type]) {
+            <span class="keyword">return</span> <span class="literal">true</span>;
+        }
+    }
+
+    <span class="keyword">return</span> <span class="literal">false</span>;
+};
+</code></pre>

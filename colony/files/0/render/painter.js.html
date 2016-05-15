@@ -1,0 +1,339 @@
+<h1>painter.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> browser = require(<span class="string">'../util/browser'</span>);
+<span class="keyword">var</span> mat4 = require(<span class="string">'gl-matrix'</span>).mat4;
+<span class="keyword">var</span> FrameHistory = require(<span class="string">'./frame_history'</span>);
+<span class="keyword">var</span> TilePyramid = require(<span class="string">'../source/tile_pyramid'</span>);
+<span class="keyword">var</span> EXTENT = require(<span class="string">'../data/bucket'</span>).EXTENT;
+<span class="keyword">var</span> pixelsToTileUnits = require(<span class="string">'../source/pixels_to_tile_units'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> StructArrayType = require(<span class="string">'../util/struct_array'</span>);
+<span class="keyword">var</span> Buffer = require(<span class="string">'../data/buffer'</span>);
+<span class="keyword">var</span> VertexArrayObject = require(<span class="string">'./vertex_array_object'</span>);
+<span class="keyword">var</span> RasterBoundsArray = require(<span class="string">'./draw_raster'</span>).RasterBoundsArray;
+
+module.exports = Painter;
+
+<span class="comment">/**
+ * Initialize a new painter object.
+ *
+ * @param {Canvas} gl an experimental-webgl drawing context
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Painter</span><span class="params">(gl, transform)</span> {</span>
+    <span class="keyword">this</span>.gl = gl;
+    <span class="keyword">this</span>.transform = transform;
+
+    <span class="keyword">this</span>.reusableTextures = {};
+    <span class="keyword">this</span>.preFbos = {};
+
+    <span class="keyword">this</span>.frameHistory = <span class="keyword">new</span> FrameHistory();
+
+    <span class="keyword">this</span>.setup();
+
+    <span class="comment">// Within each layer there are multiple distinct z-planes that can be drawn to.</span>
+    <span class="comment">// This is implemented using the WebGL depth buffer.</span>
+    <span class="keyword">this</span>.numSublayers = TilePyramid.maxUnderzooming + TilePyramid.maxOverzooming + <span class="number">1</span>;
+    <span class="keyword">this</span>.depthEpsilon = <span class="number">1</span> / Math.pow(<span class="number">2</span>, <span class="number">16</span>);
+
+    <span class="keyword">this</span>.lineWidthRange = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE);
+}
+
+util.extend(Painter.prototype, require(<span class="string">'./painter/use_program'</span>));
+
+<span class="comment">/*
+ * Update the GL viewport, projection matrix, and transforms to compensate
+ * for a new width and height value.
+ */</span>
+Painter.prototype.resize = <span class="keyword">function</span>(width, height) {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+
+    <span class="keyword">this</span>.width = width * browser.devicePixelRatio;
+    <span class="keyword">this</span>.height = height * browser.devicePixelRatio;
+    gl.viewport(<span class="number">0</span>, <span class="number">0</span>, <span class="keyword">this</span>.width, <span class="keyword">this</span>.height);
+
+};
+
+Painter.prototype.setup = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+
+    gl.verbose = <span class="literal">true</span>;
+
+    <span class="comment">// We are blending the new pixels *behind* the existing pixels. That way we can</span>
+    <span class="comment">// draw front-to-back and use then stencil buffer to cull opaque pixels early.</span>
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.enable(gl.STENCIL_TEST);
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+
+    <span class="keyword">this</span>._depthMask = <span class="literal">false</span>;
+    gl.depthMask(<span class="literal">false</span>);
+
+    <span class="keyword">var</span> PosArray = <span class="keyword">this</span>.PosArray = <span class="keyword">new</span> StructArrayType({
+        members: [{ name: <span class="string">'a_pos'</span>, type: <span class="string">'Int16'</span>, components: <span class="number">2</span> }]
+    });
+
+    <span class="keyword">var</span> tileExtentArray = <span class="keyword">new</span> PosArray();
+    tileExtentArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>);
+    tileExtentArray.emplaceBack(EXTENT, <span class="number">0</span>);
+    tileExtentArray.emplaceBack(<span class="number">0</span>, EXTENT);
+    tileExtentArray.emplaceBack(EXTENT, EXTENT);
+    <span class="keyword">this</span>.tileExtentBuffer = <span class="keyword">new</span> Buffer(tileExtentArray.serialize(), PosArray.serialize(), Buffer.BufferType.VERTEX);
+    <span class="keyword">this</span>.tileExtentVAO = <span class="keyword">new</span> VertexArrayObject();
+    <span class="keyword">this</span>.tileExtentPatternVAO = <span class="keyword">new</span> VertexArrayObject();
+
+    <span class="keyword">var</span> debugArray = <span class="keyword">new</span> PosArray();
+    debugArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>);
+    debugArray.emplaceBack(EXTENT, <span class="number">0</span>);
+    debugArray.emplaceBack(EXTENT, EXTENT);
+    debugArray.emplaceBack(<span class="number">0</span>, EXTENT);
+    debugArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>);
+    <span class="keyword">this</span>.debugBuffer = <span class="keyword">new</span> Buffer(debugArray.serialize(), PosArray.serialize(), Buffer.BufferType.VERTEX);
+    <span class="keyword">this</span>.debugVAO = <span class="keyword">new</span> VertexArrayObject();
+
+    <span class="keyword">var</span> rasterBoundsArray = <span class="keyword">new</span> RasterBoundsArray();
+    rasterBoundsArray.emplaceBack(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>);
+    rasterBoundsArray.emplaceBack(EXTENT, <span class="number">0</span>, <span class="number">32767</span>, <span class="number">0</span>);
+    rasterBoundsArray.emplaceBack(<span class="number">0</span>, EXTENT, <span class="number">0</span>, <span class="number">32767</span>);
+    rasterBoundsArray.emplaceBack(EXTENT, EXTENT, <span class="number">32767</span>, <span class="number">32767</span>);
+    <span class="keyword">this</span>.rasterBoundsBuffer = <span class="keyword">new</span> Buffer(rasterBoundsArray.serialize(), RasterBoundsArray.serialize(), Buffer.BufferType.VERTEX);
+    <span class="keyword">this</span>.rasterBoundsVAO = <span class="keyword">new</span> VertexArrayObject();
+};
+
+<span class="comment">/*
+ * Reset the color buffers of the drawing canvas.
+ */</span>
+Painter.prototype.clearColor = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.clearColor(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+};
+
+<span class="comment">/*
+ * Reset the drawing canvas by clearing the stencil buffer so that we can draw
+ * new tiles at the same location, while retaining previously drawn pixels.
+ */</span>
+Painter.prototype.clearStencil = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.clearStencil(<span class="number">0x0</span>);
+    gl.stencilMask(<span class="number">0xFF</span>);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+};
+
+Painter.prototype.clearDepth = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.clearDepth(<span class="number">1</span>);
+    <span class="keyword">this</span>.depthMask(<span class="literal">true</span>);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+};
+
+Painter.prototype._renderTileClippingMasks = <span class="keyword">function</span>(coords) {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.colorMask(<span class="literal">false</span>, <span class="literal">false</span>, <span class="literal">false</span>, <span class="literal">false</span>);
+    <span class="keyword">this</span>.depthMask(<span class="literal">false</span>);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.STENCIL_TEST);
+
+    <span class="comment">// Only write clipping IDs to the last 5 bits. The first three are used for drawing fills.</span>
+    gl.stencilMask(<span class="number">0xF8</span>);
+    <span class="comment">// Tests will always pass, and ref value will be written to stencil buffer.</span>
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+
+    <span class="keyword">var</span> idNext = <span class="number">1</span>;
+    <span class="keyword">this</span>._tileClippingMaskIDs = {};
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; coords.length; i++) {
+        <span class="keyword">var</span> coord = coords[i];
+        <span class="keyword">var</span> id = <span class="keyword">this</span>._tileClippingMaskIDs[coord.id] = (idNext++) &lt;&lt; <span class="number">3</span>;
+
+        gl.stencilFunc(gl.ALWAYS, id, <span class="number">0xF8</span>);
+
+        <span class="keyword">var</span> program = <span class="keyword">this</span>.useProgram(<span class="string">'fill'</span>);
+        gl.uniformMatrix4fv(program.u_matrix, <span class="literal">false</span>, coord.posMatrix);
+
+        <span class="comment">// Draw the clipping mask</span>
+        <span class="keyword">this</span>.tileExtentVAO.bind(gl, program, <span class="keyword">this</span>.tileExtentBuffer);
+        gl.drawArrays(gl.TRIANGLE_STRIP, <span class="number">0</span>, <span class="keyword">this</span>.tileExtentBuffer.length);
+    }
+
+    gl.stencilMask(<span class="number">0x00</span>);
+    gl.colorMask(<span class="literal">true</span>, <span class="literal">true</span>, <span class="literal">true</span>, <span class="literal">true</span>);
+    <span class="keyword">this</span>.depthMask(<span class="literal">true</span>);
+    gl.enable(gl.DEPTH_TEST);
+};
+
+Painter.prototype.enableTileClippingMask = <span class="keyword">function</span>(coord) {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.stencilFunc(gl.EQUAL, <span class="keyword">this</span>._tileClippingMaskIDs[coord.id], <span class="number">0xF8</span>);
+};
+
+<span class="comment">// Overridden by headless tests.</span>
+Painter.prototype.prepareBuffers = <span class="keyword">function</span>() {};
+Painter.prototype.bindDefaultFramebuffer = <span class="keyword">function</span>() {
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, <span class="literal">null</span>);
+};
+
+<span class="keyword">var</span> draw = {
+    symbol: require(<span class="string">'./draw_symbol'</span>),
+    circle: require(<span class="string">'./draw_circle'</span>),
+    line: require(<span class="string">'./draw_line'</span>),
+    fill: require(<span class="string">'./draw_fill'</span>),
+    raster: require(<span class="string">'./draw_raster'</span>),
+    background: require(<span class="string">'./draw_background'</span>),
+    debug: require(<span class="string">'./draw_debug'</span>)
+};
+
+Painter.prototype.render = <span class="keyword">function</span>(style, options) {
+    <span class="keyword">this</span>.style = style;
+    <span class="keyword">this</span>.options = options;
+
+    <span class="keyword">this</span>.lineAtlas = style.lineAtlas;
+
+    <span class="keyword">this</span>.spriteAtlas = style.spriteAtlas;
+    <span class="keyword">this</span>.spriteAtlas.setSprite(style.sprite);
+
+    <span class="keyword">this</span>.glyphSource = style.glyphSource;
+
+    <span class="keyword">this</span>.frameHistory.record(<span class="keyword">this</span>.transform.zoom);
+
+    <span class="keyword">this</span>.prepareBuffers();
+    <span class="keyword">this</span>.clearColor();
+    <span class="keyword">this</span>.clearDepth();
+
+    <span class="keyword">this</span>.showOverdrawInspector(options.showOverdrawInspector);
+
+    <span class="keyword">this</span>.depthRange = (style._order.length + <span class="number">2</span>) * <span class="keyword">this</span>.numSublayers * <span class="keyword">this</span>.depthEpsilon;
+
+    <span class="keyword">this</span>.renderPass({isOpaquePass: <span class="literal">true</span>});
+    <span class="keyword">this</span>.renderPass({isOpaquePass: <span class="literal">false</span>});
+};
+
+Painter.prototype.renderPass = <span class="keyword">function</span>(options) {
+    <span class="keyword">var</span> groups = <span class="keyword">this</span>.style._groups;
+    <span class="keyword">var</span> isOpaquePass = options.isOpaquePass;
+    <span class="keyword">this</span>.currentLayer = isOpaquePass ? <span class="keyword">this</span>.style._order.length : -<span class="number">1</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; groups.length; i++) {
+        <span class="keyword">var</span> group = groups[isOpaquePass ? groups.length - <span class="number">1</span> - i : i];
+        <span class="keyword">var</span> source = <span class="keyword">this</span>.style.sources[group.source];
+
+        <span class="keyword">var</span> j;
+        <span class="keyword">var</span> coords = [];
+        <span class="keyword">if</span> (source) {
+            coords = source.getVisibleCoordinates();
+            <span class="keyword">for</span> (j = <span class="number">0</span>; j &lt; coords.length; j++) {
+                coords[j].posMatrix = <span class="keyword">this</span>.transform.calculatePosMatrix(coords[j], source.maxzoom);
+            }
+            <span class="keyword">this</span>.clearStencil();
+            <span class="keyword">if</span> (source.prepare) source.prepare();
+            <span class="keyword">if</span> (source.isTileClipped) {
+                <span class="keyword">this</span>._renderTileClippingMasks(coords);
+            }
+        }
+
+        <span class="keyword">if</span> (isOpaquePass) {
+            <span class="keyword">if</span> (!<span class="keyword">this</span>._showOverdrawInspector) {
+                <span class="keyword">this</span>.gl.disable(<span class="keyword">this</span>.gl.BLEND);
+            }
+            <span class="keyword">this</span>.isOpaquePass = <span class="literal">true</span>;
+        } <span class="keyword">else</span> {
+            <span class="keyword">this</span>.gl.enable(<span class="keyword">this</span>.gl.BLEND);
+            <span class="keyword">this</span>.isOpaquePass = <span class="literal">false</span>;
+            coords.reverse();
+        }
+
+        <span class="keyword">for</span> (j = <span class="number">0</span>; j &lt; group.length; j++) {
+            <span class="keyword">var</span> layer = group[isOpaquePass ? group.length - <span class="number">1</span> - j : j];
+            <span class="keyword">this</span>.currentLayer += isOpaquePass ? -<span class="number">1</span> : <span class="number">1</span>;
+            <span class="keyword">this</span>.renderLayer(<span class="keyword">this</span>, source, layer, coords);
+        }
+
+        <span class="keyword">if</span> (source) {
+            draw.debug(<span class="keyword">this</span>, source, coords);
+        }
+    }
+};
+
+Painter.prototype.depthMask = <span class="keyword">function</span>(mask) {
+    <span class="keyword">if</span> (mask !== <span class="keyword">this</span>._depthMask) {
+        <span class="keyword">this</span>._depthMask = mask;
+        <span class="keyword">this</span>.gl.depthMask(mask);
+    }
+};
+
+Painter.prototype.renderLayer = <span class="keyword">function</span>(painter, source, layer, coords) {
+    <span class="keyword">if</span> (layer.isHidden(<span class="keyword">this</span>.transform.zoom)) <span class="keyword">return</span>;
+    <span class="keyword">if</span> (layer.type !== <span class="string">'background'</span> &amp;&amp; !coords.length) <span class="keyword">return</span>;
+    <span class="keyword">this</span>.id = layer.id;
+    draw[layer.type](painter, source, layer, coords);
+};
+
+Painter.prototype.setDepthSublayer = <span class="keyword">function</span>(n) {
+    <span class="keyword">var</span> farDepth = <span class="number">1</span> - ((<span class="number">1</span> + <span class="keyword">this</span>.currentLayer) * <span class="keyword">this</span>.numSublayers + n) * <span class="keyword">this</span>.depthEpsilon;
+    <span class="keyword">var</span> nearDepth = farDepth - <span class="number">1</span> + <span class="keyword">this</span>.depthRange;
+    <span class="keyword">this</span>.gl.depthRange(nearDepth, farDepth);
+};
+
+Painter.prototype.translatePosMatrix = <span class="keyword">function</span>(matrix, tile, translate, anchor) {
+    <span class="keyword">if</span> (!translate[<span class="number">0</span>] &amp;&amp; !translate[<span class="number">1</span>]) <span class="keyword">return</span> matrix;
+
+    <span class="keyword">if</span> (anchor === <span class="string">'viewport'</span>) {
+        <span class="keyword">var</span> sinA = Math.sin(-<span class="keyword">this</span>.transform.angle);
+        <span class="keyword">var</span> cosA = Math.cos(-<span class="keyword">this</span>.transform.angle);
+        translate = [
+            translate[<span class="number">0</span>] * cosA - translate[<span class="number">1</span>] * sinA,
+            translate[<span class="number">0</span>] * sinA + translate[<span class="number">1</span>] * cosA
+        ];
+    }
+
+    <span class="keyword">var</span> translation = [
+        pixelsToTileUnits(tile, translate[<span class="number">0</span>], <span class="keyword">this</span>.transform.zoom),
+        pixelsToTileUnits(tile, translate[<span class="number">1</span>], <span class="keyword">this</span>.transform.zoom),
+        <span class="number">0</span>
+    ];
+
+    <span class="keyword">var</span> translatedMatrix = <span class="keyword">new</span> Float32Array(<span class="number">16</span>);
+    mat4.translate(translatedMatrix, matrix, translation);
+    <span class="keyword">return</span> translatedMatrix;
+};
+
+Painter.prototype.saveTexture = <span class="keyword">function</span>(texture) {
+    <span class="keyword">var</span> textures = <span class="keyword">this</span>.reusableTextures[texture.size];
+    <span class="keyword">if</span> (!textures) {
+        <span class="keyword">this</span>.reusableTextures[texture.size] = [texture];
+    } <span class="keyword">else</span> {
+        textures.push(texture);
+    }
+};
+
+
+Painter.prototype.getTexture = <span class="keyword">function</span>(size) {
+    <span class="keyword">var</span> textures = <span class="keyword">this</span>.reusableTextures[size];
+    <span class="keyword">return</span> textures &amp;&amp; textures.length > <span class="number">0</span> ? textures.pop() : <span class="literal">null</span>;
+};
+
+Painter.prototype.lineWidth = <span class="keyword">function</span>(width) {
+    <span class="keyword">this</span>.gl.lineWidth(util.clamp(width, <span class="keyword">this</span>.lineWidthRange[<span class="number">0</span>], <span class="keyword">this</span>.lineWidthRange[<span class="number">1</span>]));
+};
+
+Painter.prototype.showOverdrawInspector = <span class="keyword">function</span>(enabled) {
+    <span class="keyword">if</span> (!enabled &amp;&amp; !<span class="keyword">this</span>._showOverdrawInspector) <span class="keyword">return</span>;
+    <span class="keyword">this</span>._showOverdrawInspector = enabled;
+
+    <span class="keyword">var</span> gl = <span class="keyword">this</span>.gl;
+    <span class="keyword">if</span> (enabled) {
+        gl.blendFunc(gl.CONSTANT_COLOR, gl.ONE);
+        <span class="keyword">var</span> numOverdrawSteps = <span class="number">8</span>;
+        <span class="keyword">var</span> a = <span class="number">1</span> / numOverdrawSteps;
+        gl.blendColor(a, a, a, <span class="number">0</span>);
+        gl.clearColor(<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+    } <span class="keyword">else</span> {
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
+};
+</code></pre>

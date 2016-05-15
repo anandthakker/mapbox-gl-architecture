@@ -1,0 +1,230 @@
+<h1>drag_pan.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../../util/dom'</span>),
+    util = require(<span class="string">'../../util/util'</span>);
+
+module.exports = DragPanHandler;
+
+<span class="keyword">var</span> inertiaLinearity = <span class="number">0.3</span>,
+    inertiaEasing = util.bezier(<span class="number">0</span>, <span class="number">0</span>, inertiaLinearity, <span class="number">1</span>),
+    inertiaMaxSpeed = <span class="number">1400</span>, <span class="comment">// px/s</span>
+    inertiaDeceleration = <span class="number">2500</span>; <span class="comment">// px/s^2</span>
+
+
+<span class="comment">/**
+ * The `DragPanHandler` allows a user to pan the map by clicking and dragging
+ * the cursor.
+ * @class DragPanHandler
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">DragPanHandler</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+DragPanHandler.prototype = {
+
+    _enabled: <span class="literal">false</span>,
+    _active: <span class="literal">false</span>,
+
+    <span class="comment">/**
+     * Returns the current enabled/disabled state of the "drag to pan" interaction.
+     * @returns {boolean} enabled state
+     */</span>
+    isEnabled: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._enabled;
+    },
+
+    <span class="comment">/**
+     * Returns true if the "drag to pan" interaction is currently active, i.e. currently being used.
+     * @returns {boolean} active state
+     */</span>
+    isActive: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._active;
+    },
+
+    <span class="comment">/**
+     * Enable the "drag to pan" interaction.
+     * @example
+     * map.dragPan.enable();
+     */</span>
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._el.addEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">true</span>;
+    },
+
+    <span class="comment">/**
+     * Disable the "drag to pan" interaction.
+     * @example
+     * map.dragPan.disable();
+     */</span>
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isEnabled()) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._el.removeEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onDown);
+        <span class="keyword">this</span>._enabled = <span class="literal">false</span>;
+    },
+
+    _onDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (<span class="keyword">this</span>.isActive()) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (e.touches) {
+            document.addEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onMove);
+            document.addEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onTouchEnd);
+        } <span class="keyword">else</span> {
+            document.addEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMove);
+            document.addEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp);
+        }
+
+        <span class="keyword">this</span>._active = <span class="literal">false</span>;
+        <span class="keyword">this</span>._startPos = <span class="keyword">this</span>._pos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+        <span class="keyword">this</span>._inertia = [[Date.now(), <span class="keyword">this</span>._pos]];
+    },
+
+    _onMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isActive()) {
+            <span class="keyword">this</span>._active = <span class="literal">true</span>;
+            <span class="keyword">this</span>._fireEvent(<span class="string">'dragstart'</span>, e);
+            <span class="keyword">this</span>._fireEvent(<span class="string">'movestart'</span>, e);
+        }
+
+        <span class="keyword">var</span> pos = DOM.mousePos(<span class="keyword">this</span>._el, e),
+            map = <span class="keyword">this</span>._map;
+
+        map.stop();
+        <span class="keyword">this</span>._drainInertiaBuffer();
+        <span class="keyword">this</span>._inertia.push([Date.now(), pos]);
+
+        map.transform.setLocationAtPoint(map.transform.pointLocation(<span class="keyword">this</span>._pos), pos);
+
+        <span class="keyword">this</span>._fireEvent(<span class="string">'drag'</span>, e);
+        <span class="keyword">this</span>._fireEvent(<span class="string">'move'</span>, e);
+
+        <span class="keyword">this</span>._pos = pos;
+
+        e.preventDefault();
+    },
+
+    _onUp: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.isActive()) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._active = <span class="literal">false</span>;
+        <span class="keyword">this</span>._fireEvent(<span class="string">'dragend'</span>, e);
+        <span class="keyword">this</span>._drainInertiaBuffer();
+
+        <span class="keyword">var</span> finish = <span class="keyword">function</span>() {
+            <span class="keyword">this</span>._fireEvent(<span class="string">'moveend'</span>, e);
+        }.bind(<span class="keyword">this</span>);
+
+        <span class="keyword">var</span> inertia = <span class="keyword">this</span>._inertia;
+        <span class="keyword">if</span> (inertia.length &lt; <span class="number">2</span>) {
+            finish();
+            <span class="keyword">return</span>;
+        }
+
+        <span class="keyword">var</span> last = inertia[inertia.length - <span class="number">1</span>],
+            first = inertia[<span class="number">0</span>],
+            flingOffset = last[<span class="number">1</span>].sub(first[<span class="number">1</span>]),
+            flingDuration = (last[<span class="number">0</span>] - first[<span class="number">0</span>]) / <span class="number">1000</span>;
+
+        <span class="keyword">if</span> (flingDuration === <span class="number">0</span> || last[<span class="number">1</span>].equals(first[<span class="number">1</span>])) {
+            finish();
+            <span class="keyword">return</span>;
+        }
+
+        <span class="comment">// calculate px/s velocity &amp; adjust for increased initial animation speed when easing out</span>
+        <span class="keyword">var</span> velocity = flingOffset.mult(inertiaLinearity / flingDuration),
+            speed = velocity.mag(); <span class="comment">// px/s</span>
+
+        <span class="keyword">if</span> (speed > inertiaMaxSpeed) {
+            speed = inertiaMaxSpeed;
+            velocity._unit()._mult(speed);
+        }
+
+        <span class="keyword">var</span> duration = speed / (inertiaDeceleration * inertiaLinearity),
+            offset = velocity.mult(-duration / <span class="number">2</span>);
+
+        <span class="keyword">this</span>._map.panBy(offset, {
+            duration: duration * <span class="number">1000</span>,
+            easing: inertiaEasing,
+            noMoveStart: <span class="literal">true</span>
+        }, { originalEvent: e });
+    },
+
+    _onMouseUp: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._onUp(e);
+        document.removeEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMove);
+        document.removeEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp);
+    },
+
+    _onTouchEnd: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">if</span> (<span class="keyword">this</span>._ignoreEvent(e)) <span class="keyword">return</span>;
+        <span class="keyword">this</span>._onUp(e);
+        document.removeEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onMove);
+        document.removeEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onTouchEnd);
+    },
+
+    _fireEvent: <span class="function"><span class="keyword">function</span> <span class="params">(type, e)</span> {</span>
+        <span class="keyword">return</span> <span class="keyword">this</span>._map.fire(type, { originalEvent: e });
+    },
+
+    _ignoreEvent: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map;
+
+        <span class="keyword">if</span> (map.boxZoom &amp;&amp; map.boxZoom.isActive()) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (map.dragRotate &amp;&amp; map.dragRotate.isActive()) <span class="keyword">return</span> <span class="literal">true</span>;
+        <span class="keyword">if</span> (e.touches) {
+            <span class="keyword">return</span> (e.touches.length > <span class="number">1</span>);
+        } <span class="keyword">else</span> {
+            <span class="keyword">if</span> (e.ctrlKey) <span class="keyword">return</span> <span class="literal">true</span>;
+            <span class="keyword">var</span> buttons = <span class="number">1</span>,  <span class="comment">// left button</span>
+                button = <span class="number">0</span>;   <span class="comment">// left button</span>
+            <span class="keyword">return</span> (e.type === <span class="string">'mousemove'</span> ? e.buttons &amp; buttons === <span class="number">0</span> : e.button !== button);
+        }
+    },
+
+    _drainInertiaBuffer: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">var</span> inertia = <span class="keyword">this</span>._inertia,
+            now = Date.now(),
+            cutoff = <span class="number">160</span>;   <span class="comment">// msec</span>
+
+        <span class="keyword">while</span> (inertia.length > <span class="number">0</span> &amp;&amp; now - inertia[<span class="number">0</span>][<span class="number">0</span>] > cutoff) inertia.shift();
+    }
+};
+
+
+<span class="comment">/**
+ * Drag start event. This event is emitted at the start of a user-initiated pan interaction.
+ *
+ * @event dragstart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Drag event. This event is emitted repeatedly during a user-initiated pan interaction.
+ *
+ * @event drag
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Drag end event. This event is emitted at the end of a user-initiated pan interaction.
+ *
+ * @event dragend
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+</code></pre>

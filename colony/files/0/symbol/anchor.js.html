@@ -1,0 +1,23 @@
+<h1>anchor.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+module.exports = Anchor;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Anchor</span><span class="params">(x, y, angle, segment)</span> {</span>
+    <span class="keyword">this</span>.x = x;
+    <span class="keyword">this</span>.y = y;
+    <span class="keyword">this</span>.angle = angle;
+
+    <span class="keyword">if</span> (segment !== <span class="literal">undefined</span>) {
+        <span class="keyword">this</span>.segment = segment;
+    }
+}
+
+Anchor.prototype = Object.create(Point.prototype);
+
+Anchor.prototype.clone = <span class="keyword">function</span>() {
+    <span class="keyword">return</span> <span class="keyword">new</span> Anchor(<span class="keyword">this</span>.x, <span class="keyword">this</span>.y, <span class="keyword">this</span>.angle, <span class="keyword">this</span>.segment);
+};
+</code></pre>

@@ -1,0 +1,51 @@
+<h1>control.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Control;
+
+<span class="comment">/**
+ * A base class for map-related interface elements.
+ *
+ * @class Control
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Control</span><span class="params">()</span> {</span>}
+
+Control.prototype = {
+    <span class="comment">/**
+     * Add this control to the map, returning the control itself
+     * for chaining. This will insert the control's DOM element into
+     * the map's DOM element if the control has a `position` specified.
+     *
+     * @param {Map} map
+     * @returns {Control} `this`
+     */</span>
+    addTo: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>._map = map;
+        <span class="keyword">var</span> container = <span class="keyword">this</span>._container = <span class="keyword">this</span>.onAdd(map);
+        <span class="keyword">if</span> (<span class="keyword">this</span>.options &amp;&amp; <span class="keyword">this</span>.options.position) {
+            <span class="keyword">var</span> pos = <span class="keyword">this</span>.options.position;
+            <span class="keyword">var</span> corner = map._controlCorners[pos];
+            container.className += <span class="string">' mapboxgl-ctrl'</span>;
+            <span class="keyword">if</span> (pos.indexOf(<span class="string">'bottom'</span>) !== -<span class="number">1</span>) {
+                corner.insertBefore(container, corner.firstChild);
+            } <span class="keyword">else</span> {
+                corner.appendChild(container);
+            }
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Remove this control from the map it has been added to.
+     *
+     * @returns {Control} `this`
+     */</span>
+    remove: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>._container.parentNode.removeChild(<span class="keyword">this</span>._container);
+        <span class="keyword">if</span> (<span class="keyword">this</span>.onRemove) <span class="keyword">this</span>.onRemove(<span class="keyword">this</span>._map);
+        <span class="keyword">this</span>._map = <span class="literal">null</span>;
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    }
+};
+</code></pre>

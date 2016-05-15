@@ -1,0 +1,108 @@
+<h1>evented.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> util = require(<span class="string">'./util'</span>);
+
+<span class="comment">/**
+ * Methods mixed in to other classes for event capabilities.
+ * @mixin Evented
+ */</span>
+<span class="keyword">var</span> Evented = {
+
+    <span class="comment">/**
+     * Subscribe to a specified event with a listener function the latter gets the data object that was passed to `fire` and additionally `target` and `type` properties
+     *
+     * @param {string} type Event type
+     * @param {Function} listener Function to be called when the event is fired
+     * @returns {Object} `this`
+     */</span>
+    on: <span class="keyword">function</span>(type, listener) {
+        <span class="keyword">this</span>._events = <span class="keyword">this</span>._events || {};
+        <span class="keyword">this</span>._events[type] = <span class="keyword">this</span>._events[type] || [];
+        <span class="keyword">this</span>._events[type].push(listener);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Remove a event listener
+     *
+     * @param {string} [type] Event type. If none is specified, remove all listeners
+     * @param {Function} [listener] Function to be called when the event is fired. If none is specified all listeners are removed
+     * @returns {Object} `this`
+     */</span>
+    off: <span class="keyword">function</span>(type, listener) {
+        <span class="keyword">if</span> (!type) {
+            <span class="comment">// clear all listeners if no arguments specified</span>
+            <span class="keyword">delete</span> <span class="keyword">this</span>._events;
+            <span class="keyword">return</span> <span class="keyword">this</span>;
+        }
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.listens(type)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        <span class="keyword">if</span> (listener) {
+            <span class="keyword">var</span> idx = <span class="keyword">this</span>._events[type].indexOf(listener);
+            <span class="keyword">if</span> (idx >= <span class="number">0</span>) {
+                <span class="keyword">this</span>._events[type].splice(idx, <span class="number">1</span>);
+            }
+            <span class="keyword">if</span> (!<span class="keyword">this</span>._events[type].length) {
+                <span class="keyword">delete</span> <span class="keyword">this</span>._events[type];
+            }
+        } <span class="keyword">else</span> {
+            <span class="keyword">delete</span> <span class="keyword">this</span>._events[type];
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Call a function once when an event has fired
+     *
+     * @param {string} type Event type.
+     * @param {Function} listener Function to be called once when the event is fired
+     * @returns {Object} `this`
+     */</span>
+    once: <span class="keyword">function</span>(type, listener) {
+        <span class="keyword">var</span> wrapper = <span class="keyword">function</span>(data) {
+            <span class="keyword">this</span>.off(type, wrapper);
+            listener.call(<span class="keyword">this</span>, data);
+        }.bind(<span class="keyword">this</span>);
+        <span class="keyword">this</span>.on(type, wrapper);
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Fire event of a given string type with the given data object
+     *
+     * @param {string} type Event type
+     * @param {Object} [data] Optional data passed to the event receiver (e.g. {@link #EventData})
+     * @returns {Object} `this`
+     */</span>
+    fire: <span class="keyword">function</span>(type, data) {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>.listens(type)) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        data = util.extend({}, data);
+        util.extend(data, {type: type, target: <span class="keyword">this</span>});
+
+        <span class="comment">// make sure adding/removing listeners inside other listeners won't cause infinite loop</span>
+        <span class="keyword">var</span> listeners = <span class="keyword">this</span>._events[type].slice();
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; listeners.length; i++) {
+            listeners[i].call(<span class="keyword">this</span>, data);
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Check if an event is registered to a type
+     * @param {string} type Event type
+     * @returns {boolean} `true` if there is at least one registered listener for events of type `type`
+     */</span>
+    listens: <span class="keyword">function</span>(type) {
+        <span class="keyword">return</span> !!(<span class="keyword">this</span>._events &amp;&amp; <span class="keyword">this</span>._events[type]);
+    }
+};
+
+module.exports = Evented;
+</code></pre>

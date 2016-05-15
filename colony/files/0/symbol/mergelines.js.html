@@ -1,0 +1,91 @@
+<h1>mergelines.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = <span class="function"><span class="keyword">function</span> <span class="params">(features, textFeatures, geometries)</span> {</span>
+
+    <span class="keyword">var</span> leftIndex = {},
+        rightIndex = {},
+        mergedFeatures = [],
+        mergedGeom = [],
+        mergedTexts = [],
+        mergedIndex = <span class="number">0</span>,
+        k;
+
+    <span class="function"><span class="keyword">function</span> <span class="title">add</span><span class="params">(k)</span> {</span>
+        mergedFeatures.push(features[k]);
+        mergedGeom.push(geometries[k]);
+        mergedTexts.push(textFeatures[k]);
+        mergedIndex++;
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">mergeFromRight</span><span class="params">(leftKey, rightKey, geom)</span> {</span>
+        <span class="keyword">var</span> i = rightIndex[leftKey];
+        <span class="keyword">delete</span> rightIndex[leftKey];
+        rightIndex[rightKey] = i;
+
+        mergedGeom[i][<span class="number">0</span>].pop();
+        mergedGeom[i][<span class="number">0</span>] = mergedGeom[i][<span class="number">0</span>].concat(geom[<span class="number">0</span>]);
+        <span class="keyword">return</span> i;
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">mergeFromLeft</span><span class="params">(leftKey, rightKey, geom)</span> {</span>
+        <span class="keyword">var</span> i = leftIndex[rightKey];
+        <span class="keyword">delete</span> leftIndex[rightKey];
+        leftIndex[leftKey] = i;
+
+        mergedGeom[i][<span class="number">0</span>].shift();
+        mergedGeom[i][<span class="number">0</span>] = geom[<span class="number">0</span>].concat(mergedGeom[i][<span class="number">0</span>]);
+        <span class="keyword">return</span> i;
+    }
+
+    <span class="function"><span class="keyword">function</span> <span class="title">getKey</span><span class="params">(text, geom, onRight)</span> {</span>
+        <span class="keyword">var</span> point = onRight ? geom[<span class="number">0</span>][geom[<span class="number">0</span>].length - <span class="number">1</span>] : geom[<span class="number">0</span>][<span class="number">0</span>];
+        <span class="keyword">return</span> text + <span class="string">':'</span> + point.x + <span class="string">':'</span> + point.y;
+    }
+
+    <span class="keyword">for</span> (k = <span class="number">0</span>; k &lt; features.length; k++) {
+        <span class="keyword">var</span> geom = geometries[k],
+            text = textFeatures[k];
+
+        <span class="keyword">if</span> (!text) {
+            add(k);
+            <span class="keyword">continue</span>;
+        }
+
+        <span class="keyword">var</span> leftKey = getKey(text, geom),
+            rightKey = getKey(text, geom, <span class="literal">true</span>);
+
+        <span class="keyword">if</span> ((leftKey <span class="keyword">in</span> rightIndex) &amp;&amp; (rightKey <span class="keyword">in</span> leftIndex) &amp;&amp; (rightIndex[leftKey] !== leftIndex[rightKey])) {
+            <span class="comment">// found lines with the same text adjacent to both ends of the current line, merge all three</span>
+            <span class="keyword">var</span> j = mergeFromLeft(leftKey, rightKey, geom);
+            <span class="keyword">var</span> i = mergeFromRight(leftKey, rightKey, mergedGeom[j]);
+
+            <span class="keyword">delete</span> leftIndex[leftKey];
+            <span class="keyword">delete</span> rightIndex[rightKey];
+
+            rightIndex[getKey(text, mergedGeom[i], <span class="literal">true</span>)] = i;
+            mergedGeom[j] = <span class="literal">null</span>;
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (leftKey <span class="keyword">in</span> rightIndex) {
+            <span class="comment">// found mergeable line adjacent to the start of the current line, merge</span>
+            mergeFromRight(leftKey, rightKey, geom);
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (rightKey <span class="keyword">in</span> leftIndex) {
+            <span class="comment">// found mergeable line adjacent to the end of the current line, merge</span>
+            mergeFromLeft(leftKey, rightKey, geom);
+
+        } <span class="keyword">else</span> {
+            <span class="comment">// no adjacent lines, add as a new item</span>
+            add(k);
+            leftIndex[leftKey] = mergedIndex - <span class="number">1</span>;
+            rightIndex[rightKey] = mergedIndex - <span class="number">1</span>;
+        }
+    }
+
+    <span class="keyword">return</span> {
+        features: mergedFeatures,
+        textFeatures: mergedTexts,
+        geometries: mergedGeom
+    };
+};
+</code></pre>

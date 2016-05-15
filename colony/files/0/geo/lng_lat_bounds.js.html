@@ -1,0 +1,174 @@
+<h1>lng_lat_bounds.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = LngLatBounds;
+
+<span class="keyword">var</span> LngLat = require(<span class="string">'./lng_lat'</span>);
+
+<span class="comment">/**
+ * Creates a bounding box from the given pair of points. If parameteres are omitted, a `null` bounding box is created.
+ *
+ * @class LngLatBounds
+ * @classdesc A representation of rectangular box on the earth, defined by its southwest and northeast points in longitude and latitude.
+ * @param {LngLat} sw southwest
+ * @param {LngLat} ne northeast
+ * @example
+ * var sw = new mapboxgl.LngLat(-73.9876, 40.7661);
+ * var ne = new mapboxgl.LngLat(-73.9397, 40.8002);
+ * var llb = new mapboxgl.LngLatBounds(sw, ne);
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">LngLatBounds</span><span class="params">(sw, ne)</span> {</span>
+    <span class="keyword">if</span> (!sw) {
+        <span class="keyword">return</span>;
+    } <span class="keyword">else</span> <span class="keyword">if</span> (ne) {
+        <span class="keyword">this</span>.extend(sw).extend(ne);
+    } <span class="keyword">else</span> <span class="keyword">if</span> (sw.length === <span class="number">4</span>) {
+        <span class="keyword">this</span>.extend([sw[<span class="number">0</span>], sw[<span class="number">1</span>]]).extend([sw[<span class="number">2</span>], sw[<span class="number">3</span>]]);
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.extend(sw[<span class="number">0</span>]).extend(sw[<span class="number">1</span>]);
+    }
+}
+
+LngLatBounds.prototype = {
+
+    <span class="comment">/**
+     * Extend the bounds to include a given LngLat or LngLatBounds.
+     *
+     * @param {LngLat|LngLatBounds} obj object to extend to
+     * @returns {LngLatBounds} `this`
+     */</span>
+    extend: <span class="keyword">function</span>(obj) {
+        <span class="keyword">var</span> sw = <span class="keyword">this</span>._sw,
+            ne = <span class="keyword">this</span>._ne,
+            sw2, ne2;
+
+        <span class="keyword">if</span> (obj <span class="keyword">instanceof</span> LngLat) {
+            sw2 = obj;
+            ne2 = obj;
+
+        } <span class="keyword">else</span> <span class="keyword">if</span> (obj <span class="keyword">instanceof</span> LngLatBounds) {
+            sw2 = obj._sw;
+            ne2 = obj._ne;
+
+            <span class="keyword">if</span> (!sw2 || !ne2) <span class="keyword">return</span> <span class="keyword">this</span>;
+
+        } <span class="keyword">else</span> {
+            <span class="keyword">return</span> obj ? <span class="keyword">this</span>.extend(LngLat.convert(obj) || LngLatBounds.convert(obj)) : <span class="keyword">this</span>;
+        }
+
+        <span class="keyword">if</span> (!sw &amp;&amp; !ne) {
+            <span class="keyword">this</span>._sw = <span class="keyword">new</span> LngLat(sw2.lng, sw2.lat);
+            <span class="keyword">this</span>._ne = <span class="keyword">new</span> LngLat(ne2.lng, ne2.lat);
+
+        } <span class="keyword">else</span> {
+            sw.lng = Math.min(sw2.lng, sw.lng);
+            sw.lat = Math.min(sw2.lat, sw.lat);
+            ne.lng = Math.max(ne2.lng, ne.lng);
+            ne.lat = Math.max(ne2.lat, ne.lat);
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the point equidistant from this box's corners
+     * @returns {LngLat} centerpoint
+     * @example
+     * var llb = new mapboxgl.LngLatBounds([-73.9876, 40.7661], [-73.9397, 40.8002]);
+     * llb.getCenter(); // = LngLat {lng: -73.96365, lat: 40.78315}
+     */</span>
+    getCenter: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">new</span> LngLat((<span class="keyword">this</span>._sw.lng + <span class="keyword">this</span>._ne.lng) / <span class="number">2</span>, (<span class="keyword">this</span>._sw.lat + <span class="keyword">this</span>._ne.lat) / <span class="number">2</span>);
+    },
+
+    <span class="comment">/**
+     * Get southwest corner
+     * @returns {LngLat} southwest
+     */</span>
+    getSouthWest: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._sw; },
+
+    <span class="comment">/**
+     * Get northeast corner
+     * @returns {LngLat} northeast
+     */</span>
+    getNorthEast: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._ne; },
+
+    <span class="comment">/**
+     * Get northwest corner
+     * @returns {LngLat} northwest
+     */</span>
+    getNorthWest: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">new</span> LngLat(<span class="keyword">this</span>.getWest(), <span class="keyword">this</span>.getNorth()); },
+
+    <span class="comment">/**
+     * Get southeast corner
+     * @returns {LngLat} southeast
+     */</span>
+    getSouthEast: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">new</span> LngLat(<span class="keyword">this</span>.getEast(), <span class="keyword">this</span>.getSouth()); },
+
+    <span class="comment">/**
+     * Get west edge longitude
+     * @returns {number} west
+     */</span>
+    getWest:  <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._sw.lng; },
+
+    <span class="comment">/**
+     * Get south edge latitude
+     * @returns {number} south
+     */</span>
+    getSouth: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._sw.lat; },
+
+    <span class="comment">/**
+     * Get east edge longitude
+     * @returns {number} east
+     */</span>
+    getEast:  <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._ne.lng; },
+
+    <span class="comment">/**
+     * Get north edge latitude
+     * @returns {number} north
+     */</span>
+    getNorth: <span class="keyword">function</span>() { <span class="keyword">return</span> <span class="keyword">this</span>._ne.lat; },
+
+    <span class="comment">/**
+     * Return a `LngLatBounds` as an array
+     *
+     * @returns {array} [lng, lat]
+     * @example
+     * var llb = new mapboxgl.LngLatBounds([-73.9876, 40.7661], [-73.9397, 40.8002]);
+     * llb.toArray(); // = [[-73.9876, 40.7661], [-73.9397, 40.8002]]
+     */</span>
+    toArray: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> [<span class="keyword">this</span>._sw.toArray(), <span class="keyword">this</span>._ne.toArray()];
+    },
+
+    <span class="comment">/**
+     * Return a `LngLatBounds` as a string
+     *
+     * @returns {string} "LngLatBounds(LngLat(lng, lat), LngLat(lng, lat))"
+     * @example
+     * var llb = new mapboxgl.LngLatBounds([-73.9876, 40.7661], [-73.9397, 40.8002]);
+     * llb.toString(); // = "LngLatBounds(LngLat(-73.9876, 40.7661), LngLat(-73.9397, 40.8002))"
+     */</span>
+    toString: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">return</span> <span class="string">'LngLatBounds('</span> + <span class="keyword">this</span>._sw.toString() + <span class="string">', '</span> + <span class="keyword">this</span>._ne.toString() + <span class="string">')'</span>;
+    }
+};
+
+<span class="comment">/**
+ * Convert an array to a `LngLatBounds` object, or return an existing
+ * `LngLatBounds` object unchanged.
+ *
+ * Calls `LngLat#convert` internally to convert arrays as `LngLat` values.
+ *
+ * @param {LngLatBounds|Array&lt;number>|Array&lt;Array&lt;number>>} input input to convert to a LngLatBounds
+ * @returns {LngLatBounds} LngLatBounds object or original input
+ * @example
+ * var arr = [[-73.9876, 40.7661], [-73.9397, 40.8002]];
+ * var llb = mapboxgl.LngLatBounds.convert(arr);
+ * llb;   // = LngLatBounds {_sw: LngLat {lng: -73.9876, lat: 40.7661}, _ne: LngLat {lng: -73.9397, lat: 40.8002}}
+ */</span>
+LngLatBounds.convert = <span class="function"><span class="keyword">function</span> <span class="params">(input)</span> {</span>
+    <span class="keyword">if</span> (!input || input <span class="keyword">instanceof</span> LngLatBounds) <span class="keyword">return</span> input;
+    <span class="keyword">return</span> <span class="keyword">new</span> LngLatBounds(input);
+};
+</code></pre>

@@ -1,0 +1,327 @@
+<h1>interaction.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> handlers = {
+    scrollZoom: require(<span class="string">'./handler/scroll_zoom'</span>),
+    boxZoom: require(<span class="string">'./handler/box_zoom'</span>),
+    dragRotate: require(<span class="string">'./handler/drag_rotate'</span>),
+    dragPan: require(<span class="string">'./handler/drag_pan'</span>),
+    keyboard: require(<span class="string">'./handler/keyboard'</span>),
+    doubleClickZoom: require(<span class="string">'./handler/dblclick_zoom'</span>),
+    touchZoomRotate: require(<span class="string">'./handler/touch_zoom_rotate'</span>)
+};
+
+<span class="keyword">var</span> DOM = require(<span class="string">'../util/dom'</span>),
+    util = require(<span class="string">'../util/util'</span>),
+    Point = require(<span class="string">'point-geometry'</span>);
+
+module.exports = Interaction;
+
+<span class="function"><span class="keyword">function</span> <span class="title">Interaction</span><span class="params">(map)</span> {</span>
+    <span class="keyword">this</span>._map = map;
+    <span class="keyword">this</span>._el = map.getCanvasContainer();
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> name <span class="keyword">in</span> handlers) {
+        map[name] = <span class="keyword">new</span> handlers[name](map);
+    }
+
+    util.bindHandlers(<span class="keyword">this</span>);
+}
+
+Interaction.prototype = {
+    enable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">var</span> options = <span class="keyword">this</span>._map.options,
+            el = <span class="keyword">this</span>._el;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> name <span class="keyword">in</span> handlers) {
+            <span class="keyword">if</span> (options[name]) <span class="keyword">this</span>._map[name].enable();
+        }
+
+        el.addEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onMouseDown, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMouseMove, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onTouchStart, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onTouchEnd, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onTouchMove, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'touchcancel'</span>, <span class="keyword">this</span>._onTouchCancel, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'click'</span>, <span class="keyword">this</span>._onClick, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'dblclick'</span>, <span class="keyword">this</span>._onDblClick, <span class="literal">false</span>);
+        el.addEventListener(<span class="string">'contextmenu'</span>, <span class="keyword">this</span>._onContextMenu, <span class="literal">false</span>);
+    },
+
+    disable: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">var</span> options = <span class="keyword">this</span>._map.options,
+            el = <span class="keyword">this</span>._el;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> name <span class="keyword">in</span> handlers) {
+            <span class="keyword">if</span> (options[name]) <span class="keyword">this</span>._map[name].disable();
+        }
+
+        el.removeEventListener(<span class="string">'mousedown'</span>, <span class="keyword">this</span>._onMouseDown);
+        el.removeEventListener(<span class="string">'mouseup'</span>, <span class="keyword">this</span>._onMouseUp);
+        el.removeEventListener(<span class="string">'mousemove'</span>, <span class="keyword">this</span>._onMouseMove);
+        el.removeEventListener(<span class="string">'touchstart'</span>, <span class="keyword">this</span>._onTouchStart);
+        el.removeEventListener(<span class="string">'touchend'</span>, <span class="keyword">this</span>._onTouchEnd);
+        el.removeEventListener(<span class="string">'touchmove'</span>, <span class="keyword">this</span>._onTouchMove);
+        el.removeEventListener(<span class="string">'touchcancel'</span>, <span class="keyword">this</span>._onTouchCancel);
+        el.removeEventListener(<span class="string">'click'</span>, <span class="keyword">this</span>._onClick);
+        el.removeEventListener(<span class="string">'dblclick'</span>, <span class="keyword">this</span>._onDblClick);
+        el.removeEventListener(<span class="string">'contextmenu'</span>, <span class="keyword">this</span>._onContextMenu);
+    },
+
+    _onMouseDown: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._map.stop();
+        <span class="keyword">this</span>._startPos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+        <span class="keyword">this</span>._fireMouseEvent(<span class="string">'mousedown'</span>, e);
+    },
+
+    _onMouseUp: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map,
+            rotating = map.dragRotate &amp;&amp; map.dragRotate.isActive();
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._contextMenuEvent &amp;&amp; !rotating) {
+            <span class="keyword">this</span>._fireMouseEvent(<span class="string">'contextmenu'</span>, <span class="keyword">this</span>._contextMenuEvent);
+        }
+
+        <span class="keyword">this</span>._contextMenuEvent = <span class="literal">null</span>;
+        <span class="keyword">this</span>._fireMouseEvent(<span class="string">'mouseup'</span>, e);
+    },
+
+    _onMouseMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> map = <span class="keyword">this</span>._map,
+            el = <span class="keyword">this</span>._el;
+
+        <span class="keyword">if</span> (map.dragPan &amp;&amp; map.dragPan.isActive()) <span class="keyword">return</span>;
+        <span class="keyword">if</span> (map.dragRotate &amp;&amp; map.dragRotate.isActive()) <span class="keyword">return</span>;
+
+        <span class="keyword">var</span> target = e.toElement || e.target;
+        <span class="keyword">while</span> (target &amp;&amp; target !== el) target = target.parentNode;
+        <span class="keyword">if</span> (target !== el) <span class="keyword">return</span>;
+
+        <span class="keyword">this</span>._fireMouseEvent(<span class="string">'mousemove'</span>, e);
+    },
+
+    _onTouchStart: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._map.stop();
+        <span class="keyword">this</span>._fireTouchEvent(<span class="string">'touchstart'</span>, e);
+
+        <span class="keyword">if</span> (!e.touches || e.touches.length > <span class="number">1</span>) <span class="keyword">return</span>;
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._tapped) {
+            <span class="keyword">this</span>._tapped = setTimeout(<span class="keyword">this</span>._onTouchTimeout, <span class="number">300</span>);
+
+        } <span class="keyword">else</span> {
+            clearTimeout(<span class="keyword">this</span>._tapped);
+            <span class="keyword">this</span>._tapped = <span class="literal">null</span>;
+            <span class="keyword">this</span>._fireMouseEvent(<span class="string">'dblclick'</span>, e);
+        }
+    },
+
+    _onTouchMove: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._fireTouchEvent(<span class="string">'touchmove'</span>, e);
+    },
+
+    _onTouchEnd: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._fireTouchEvent(<span class="string">'touchend'</span>, e);
+    },
+
+    _onTouchCancel: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._fireTouchEvent(<span class="string">'touchcancel'</span>, e);
+    },
+
+    _onTouchTimeout: <span class="function"><span class="keyword">function</span> <span class="params">()</span> {</span>
+        <span class="keyword">this</span>._tapped = <span class="literal">null</span>;
+    },
+
+    _onClick: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">var</span> pos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+
+        <span class="keyword">if</span> (pos.equals(<span class="keyword">this</span>._startPos)) {
+            <span class="keyword">this</span>._fireMouseEvent(<span class="string">'click'</span>, e);
+        }
+    },
+
+    _onDblClick: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._fireMouseEvent(<span class="string">'dblclick'</span>, e);
+        e.preventDefault();
+    },
+
+    _onContextMenu: <span class="function"><span class="keyword">function</span> <span class="params">(e)</span> {</span>
+        <span class="keyword">this</span>._contextMenuEvent = e;
+        e.preventDefault();
+    },
+
+    _fireMouseEvent: <span class="function"><span class="keyword">function</span> <span class="params">(type, e)</span> {</span>
+        <span class="keyword">var</span> pos = DOM.mousePos(<span class="keyword">this</span>._el, e);
+
+        <span class="keyword">return</span> <span class="keyword">this</span>._map.fire(type, {
+            lngLat: <span class="keyword">this</span>._map.unproject(pos),
+            point: pos,
+            originalEvent: e
+        });
+    },
+
+    _fireTouchEvent: <span class="function"><span class="keyword">function</span> <span class="params">(type, e)</span> {</span>
+        <span class="keyword">var</span> touches = DOM.touchPos(<span class="keyword">this</span>._el, e),
+            singular = touches.reduce(<span class="function"><span class="keyword">function</span> <span class="params">(prev, curr, i, arr)</span> {</span>
+                <span class="keyword">return</span> prev.add(curr.div(arr.length));
+            }, <span class="keyword">new</span> Point(<span class="number">0</span>, <span class="number">0</span>));
+
+        <span class="keyword">return</span> <span class="keyword">this</span>._map.fire(type, {
+            lngLat: <span class="keyword">this</span>._map.unproject(singular),
+            point: singular,
+            lngLats: touches.map(<span class="keyword">function</span>(t) { <span class="keyword">return</span> <span class="keyword">this</span>._map.unproject(t); }, <span class="keyword">this</span>),
+            points: touches,
+            originalEvent: e
+        });
+    }
+};
+
+
+<span class="comment">/**
+ * When an event [fires]{@link #Evented.fire} as a result of a
+ * user interaction, the event will be called with an EventData
+ * object containing the original DOM event along with coordinates of
+ * the event target.
+ *
+ * @typedef {Object} EventData
+ * @property {Event} originalEvent The original DOM event
+ * @property {Point} point The pixel location of the event
+ * @property {LngLat} lngLat The geographic location of the event
+ * @example
+ * map.on('click', function(data) {
+ *   var e = data &amp;&amp; data.originalEvent;
+ *   console.log('got click ' + (e ? 'button = ' + e.button : ''));
+ * });
+ */</span>
+
+<span class="comment">/**
+ * Mouse down event.
+ *
+ * @event mousedown
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [mousedown event](https://developer.mozilla.org/en-US/docs/Web/Events/mousedown)
+ */</span>
+
+<span class="comment">/**
+ * Mouse up event.
+ *
+ * @event mouseup
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [mouseup event](https://developer.mozilla.org/en-US/docs/Web/Events/mouseup)
+ */</span>
+
+<span class="comment">/**
+ * Mouse move event.
+ *
+ * @event mousemove
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [mousemouse event](https://developer.mozilla.org/en-US/docs/Web/Events/mousemove)
+ */</span>
+
+<span class="comment">/**
+ * Touch start event.
+ *
+ * @event touchstart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [touchstart event](https://developer.mozilla.org/en-US/docs/Web/Events/touchstart).
+ */</span>
+
+<span class="comment">/**
+ * Touch end event.
+ *
+ * @event touchend
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [touchcancel event](https://developer.mozilla.org/en-US/docs/Web/Events/touchcancel).
+ */</span>
+
+<span class="comment">/**
+ * Touch move event.
+ *
+ * @event touchmove
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [touchmove event](https://developer.mozilla.org/en-US/docs/Web/Events/touchmove).
+ */</span>
+
+<span class="comment">/**
+ * Touch cancel event.
+ *
+ * @event touchcancel
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [touchcancel event](https://developer.mozilla.org/en-US/docs/Web/Events/touchcancel).
+ */</span>
+
+<span class="comment">/**
+ * Click event.
+ *
+ * @event click
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data: a [click event](https://developer.mozilla.org/en-US/docs/Web/Events/click)
+ */</span>
+
+<span class="comment">/**
+ * Double click event.
+ *
+ * @event dblclick
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data
+ */</span>
+
+<span class="comment">/**
+ * Context menu event.
+ *
+ * @event contextmenu
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if available
+ */</span>
+
+<span class="comment">/**
+ * Load event. This event is emitted immediately after all necessary resources have been downloaded
+ * and the first visually complete rendering has occurred.
+ *
+ * @event load
+ * @memberof Map
+ * @instance
+ * @type {Object}
+ */</span>
+
+<span class="comment">/**
+ * Move start event. This event is emitted just before the map begins a transition from one
+ * view to another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event movestart
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+
+<span class="comment">/**
+ * Move event. This event is emitted repeatedly during animated transitions from one view to
+ * another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event move
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+
+<span class="comment">/**
+ * Move end event. This event is emitted just after the map completes a transition from one
+ * view to another, either as a result of user interaction or the use of methods such as `Map#jumpTo`.
+ *
+ * @event moveend
+ * @memberof Map
+ * @instance
+ * @property {EventData} data Original event data, if fired interactively
+ */</span>
+</code></pre>

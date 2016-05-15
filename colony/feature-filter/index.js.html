@@ -1,0 +1,82 @@
+<h1>feature-filter</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = createFilter;
+
+<span class="keyword">var</span> types = [<span class="string">'Unknown'</span>, <span class="string">'Point'</span>, <span class="string">'LineString'</span>, <span class="string">'Polygon'</span>];
+
+<span class="comment">/**
+ * Given a filter expressed as nested arrays, return a new function
+ * that evaluates whether a given feature (with a .properties or .tags property)
+ * passes its test.
+ *
+ * @param {Array} filter mapbox gl filter
+ * @returns {Function} filter-evaluating function
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">createFilter</span><span class="params">(filter)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> Function(<span class="string">'f'</span>, <span class="string">'var p = (f &amp;&amp; f.properties || {}); return '</span> + compile(filter));
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compile</span><span class="params">(filter)</span> {</span>
+    <span class="keyword">if</span> (!filter) <span class="keyword">return</span> <span class="string">'true'</span>;
+    <span class="keyword">var</span> op = filter[<span class="number">0</span>];
+    <span class="keyword">if</span> (filter.length &lt;= <span class="number">1</span>) <span class="keyword">return</span> op === <span class="string">'any'</span> ? <span class="string">'false'</span> : <span class="string">'true'</span>;
+    <span class="keyword">var</span> str =
+        op === <span class="string">'=='</span> ? compileComparisonOp(filter[<span class="number">1</span>], filter[<span class="number">2</span>], <span class="string">'==='</span>, <span class="literal">false</span>) :
+        op === <span class="string">'!='</span> ? compileComparisonOp(filter[<span class="number">1</span>], filter[<span class="number">2</span>], <span class="string">'!=='</span>, <span class="literal">false</span>) :
+        op === <span class="string">'&lt;'</span> ||
+        op === <span class="string">'>'</span> ||
+        op === <span class="string">'&lt;='</span> ||
+        op === <span class="string">'>='</span> ? compileComparisonOp(filter[<span class="number">1</span>], filter[<span class="number">2</span>], op, <span class="literal">true</span>) :
+        op === <span class="string">'any'</span> ? compileLogicalOp(filter.slice(<span class="number">1</span>), <span class="string">'||'</span>) :
+        op === <span class="string">'all'</span> ? compileLogicalOp(filter.slice(<span class="number">1</span>), <span class="string">'&amp;&amp;'</span>) :
+        op === <span class="string">'none'</span> ? compileNegation(compileLogicalOp(filter.slice(<span class="number">1</span>), <span class="string">'||'</span>)) :
+        op === <span class="string">'in'</span> ? compileInOp(filter[<span class="number">1</span>], filter.slice(<span class="number">2</span>)) :
+        op === <span class="string">'!in'</span> ? compileNegation(compileInOp(filter[<span class="number">1</span>], filter.slice(<span class="number">2</span>))) :
+        op === <span class="string">'has'</span> ? compileHasOp(filter[<span class="number">1</span>]) :
+        op === <span class="string">'!has'</span> ? compileNegation(compileHasOp([filter[<span class="number">1</span>]])) :
+        <span class="string">'true'</span>;
+    <span class="keyword">return</span> <span class="string">'('</span> + str + <span class="string">')'</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compilePropertyReference</span><span class="params">(property)</span> {</span>
+    <span class="keyword">return</span> property === <span class="string">'$type'</span> ? <span class="string">'f.type'</span> : <span class="string">'p['</span> + JSON.stringify(property) + <span class="string">']'</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compileComparisonOp</span><span class="params">(property, value, op, checkType)</span> {</span>
+    <span class="keyword">var</span> left = compilePropertyReference(property);
+    <span class="keyword">var</span> right = property === <span class="string">'$type'</span> ? types.indexOf(value) : JSON.stringify(value);
+    <span class="keyword">return</span> (checkType ? <span class="string">'typeof '</span> + left + <span class="string">'=== typeof '</span> + right + <span class="string">'&amp;&amp;'</span> : <span class="string">''</span>) + left + op + right;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compileLogicalOp</span><span class="params">(expressions, op)</span> {</span>
+    <span class="keyword">return</span> expressions.map(compile).join(op);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compileInOp</span><span class="params">(property, values)</span> {</span>
+    <span class="keyword">if</span> (property === <span class="string">'$type'</span>) values = values.map(<span class="keyword">function</span>(value) { <span class="keyword">return</span> types.indexOf(value); });
+    <span class="keyword">var</span> left = JSON.stringify(values.sort(compare));
+    <span class="keyword">var</span> right = compilePropertyReference(property);
+
+    <span class="keyword">if</span> (values.length &lt;= <span class="number">200</span>) <span class="keyword">return</span> left + <span class="string">'.indexOf('</span> + right + <span class="string">') !== -1'</span>;
+
+    <span class="keyword">return</span> <span class="string">'function(v, a, i, j) {'</span> +
+        <span class="string">'while (i &lt;= j) { var m = (i + j) >> 1;'</span> +
+        <span class="string">'    if (a[m] === v) return true; if (a[m] > v) j = m - 1; else i = m + 1;'</span> +
+        <span class="string">'}'</span> +
+    <span class="string">'return false; }('</span> + right + <span class="string">', '</span> + left + <span class="string">',0,'</span> + (values.length - <span class="number">1</span>) + <span class="string">')'</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compileHasOp</span><span class="params">(property)</span> {</span>
+    <span class="keyword">return</span> JSON.stringify(property) + <span class="string">' in p'</span>;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">compileNegation</span><span class="params">(expression)</span> {</span>
+    <span class="keyword">return</span> <span class="string">'!('</span> + expression + <span class="string">')'</span>;
+}
+
+<span class="comment">// Comparison function to sort numbers and strings</span>
+<span class="function"><span class="keyword">function</span> <span class="title">compare</span><span class="params">(a, b)</span> {</span>
+    <span class="keyword">return</span> a &lt; b ? -<span class="number">1</span> : a > b ? <span class="number">1</span> : <span class="number">0</span>;
+}
+</code></pre>

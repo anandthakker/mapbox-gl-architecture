@@ -1,0 +1,74 @@
+<h1>clip_line.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Point = require(<span class="string">'point-geometry'</span>);
+
+module.exports = clipLine;
+
+<span class="comment">/**
+ * Returns the part of a multiline that intersects with the provided rectangular box.
+ *
+ * @param {Array&lt;Array&lt;Point>>} lines
+ * @param {number} x1 the left edge of the box
+ * @param {number} y1 the top edge of the box
+ * @param {number} x2 the right edge of the box
+ * @param {number} y2 the bottom edge of the box
+ * @returns {Array&lt;Array&lt;Point>>} lines
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">clipLine</span><span class="params">(lines, x1, y1, x2, y2)</span> {</span>
+    <span class="keyword">var</span> clippedLines = [];
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> l = <span class="number">0</span>; l &lt; lines.length; l++) {
+        <span class="keyword">var</span> line = lines[l];
+        <span class="keyword">var</span> clippedLine;
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; line.length - <span class="number">1</span>; i++) {
+            <span class="keyword">var</span> p0 = line[i];
+            <span class="keyword">var</span> p1 = line[i + <span class="number">1</span>];
+
+
+            <span class="keyword">if</span> (p0.x &lt; x1 &amp;&amp; p1.x &lt; x1) {
+                <span class="keyword">continue</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p0.x &lt; x1) {
+                p0 = <span class="keyword">new</span> Point(x1, p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x)))._round();
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p1.x &lt; x1) {
+                p1 = <span class="keyword">new</span> Point(x1, p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x)))._round();
+            }
+
+            <span class="keyword">if</span> (p0.y &lt; y1 &amp;&amp; p1.y &lt; y1) {
+                <span class="keyword">continue</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p0.y &lt; y1) {
+                p0 = <span class="keyword">new</span> Point(p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)), y1)._round();
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p1.y &lt; y1) {
+                p1 = <span class="keyword">new</span> Point(p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)), y1)._round();
+            }
+
+            <span class="keyword">if</span> (p0.x >= x2 &amp;&amp; p1.x >= x2) {
+                <span class="keyword">continue</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p0.x >= x2) {
+                p0 = <span class="keyword">new</span> Point(x2, p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x)))._round();
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p1.x >= x2) {
+                p1 = <span class="keyword">new</span> Point(x2, p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x)))._round();
+            }
+
+            <span class="keyword">if</span> (p0.y >= y2 &amp;&amp; p1.y >= y2) {
+                <span class="keyword">continue</span>;
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p0.y >= y2) {
+                p0 = <span class="keyword">new</span> Point(p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)), y2)._round();
+            } <span class="keyword">else</span> <span class="keyword">if</span> (p1.y >= y2) {
+                p1 = <span class="keyword">new</span> Point(p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)), y2)._round();
+            }
+
+            <span class="keyword">if</span> (!clippedLine || !p0.equals(clippedLine[clippedLine.length - <span class="number">1</span>])) {
+                clippedLine = [p0];
+                clippedLines.push(clippedLine);
+            }
+
+            clippedLine.push(p1);
+        }
+    }
+
+    <span class="keyword">return</span> clippedLines;
+}
+</code></pre>

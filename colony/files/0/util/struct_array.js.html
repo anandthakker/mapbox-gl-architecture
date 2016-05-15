@@ -1,0 +1,323 @@
+<h1>struct_array.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="comment">// Note: all "sizes" are measured in bytes</span>
+
+<span class="keyword">var</span> assert = require(<span class="string">'assert'</span>);
+
+module.exports = StructArrayType;
+
+<span class="keyword">var</span> viewTypes = {
+    <span class="string">'Int8'</span>: Int8Array,
+    <span class="string">'Uint8'</span>: Uint8Array,
+    <span class="string">'Uint8Clamped'</span>: Uint8ClampedArray,
+    <span class="string">'Int16'</span>: Int16Array,
+    <span class="string">'Uint16'</span>: Uint16Array,
+    <span class="string">'Int32'</span>: Int32Array,
+    <span class="string">'Uint32'</span>: Uint32Array,
+    <span class="string">'Float32'</span>: Float32Array,
+    <span class="string">'Float64'</span>: Float64Array
+};
+
+<span class="comment">/**
+ * @typedef StructMember
+ * @private
+ * @property {string} name
+ * @property {string} type
+ * @property {number} components
+ */</span>
+
+<span class="keyword">var</span> structArrayTypeCache = {};
+
+<span class="comment">/**
+ * `StructArrayType` is used to create new `StructArray` types.
+ *
+ * `StructArray` provides an abstraction over `ArrayBuffer` and `TypedArray` making it behave like
+ * an array of typed structs. A StructArray is comprised of elements. Each element has a set of
+ * members that are defined when the `StructArrayType` is created.
+ *
+ * StructArrays useful for creating large arrays that:
+ * - can be transferred from workers as a Transferable object
+ * - can be copied cheaply
+ * - use less memory for lower-precision members
+ * - can be used as buffers in WebGL.
+ *
+ * @class StructArrayType
+ * @param {Array.&lt;StructMember>}
+ * @param options
+ * @param {number} options.alignment Use `4` to align members to 4 byte boundaries. Default is 1.
+ *
+ * @example
+ *
+ * var PointArrayType = new StructArrayType({
+ *  members: [
+ *      { type: 'Int16', name: 'x' },
+ *      { type: 'Int16', name: 'y' }
+ *  ]});
+ *
+ *  var pointArray = new PointArrayType();
+ *  pointArray.emplaceBack(10, 15);
+ *  pointArray.emplaceBack(20, 35);
+ *
+ *  point = pointArray.get(0);
+ *  assert(point.x === 10);
+ *  assert(point.y === 15);
+ *
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">StructArrayType</span><span class="params">(options)</span> {</span>
+
+    <span class="keyword">var</span> key = JSON.stringify(options);
+    <span class="keyword">if</span> (structArrayTypeCache[key]) {
+        <span class="keyword">return</span> structArrayTypeCache[key];
+    }
+
+    <span class="keyword">if</span> (options.alignment === <span class="literal">undefined</span>) options.alignment = <span class="number">1</span>;
+
+    <span class="function"><span class="keyword">function</span> <span class="title">StructType</span><span class="params">()</span> {</span>
+        Struct.apply(<span class="keyword">this</span>, arguments);
+    }
+
+    StructType.prototype = Object.create(Struct.prototype);
+
+    <span class="keyword">var</span> offset = <span class="number">0</span>;
+    <span class="keyword">var</span> maxSize = <span class="number">0</span>;
+    <span class="keyword">var</span> usedTypes = [<span class="string">'Uint8'</span>];
+
+    StructType.prototype.members = options.members.map(<span class="keyword">function</span>(member) {
+        member = {
+            name: member.name,
+            type: member.type,
+            components: member.components || <span class="number">1</span>
+        };
+
+        assert(member.name.length);
+        assert(member.type <span class="keyword">in</span> viewTypes);
+
+        <span class="keyword">if</span> (usedTypes.indexOf(member.type) &lt; <span class="number">0</span>) usedTypes.push(member.type);
+
+        <span class="keyword">var</span> typeSize = sizeOf(member.type);
+        maxSize = Math.max(maxSize, typeSize);
+        member.offset = offset = align(offset, Math.max(options.alignment, typeSize));
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> c = <span class="number">0</span>; c &lt; member.components; c++) {
+            Object.defineProperty(StructType.prototype, member.name + (member.components === <span class="number">1</span> ? <span class="string">''</span> : c), {
+                get: createGetter(member, c),
+                set: createSetter(member, c)
+            });
+        }
+
+        offset += typeSize * member.components;
+
+        <span class="keyword">return</span> member;
+    });
+
+    StructType.prototype.alignment = options.alignment;
+    StructType.prototype.size = align(offset, Math.max(maxSize, options.alignment));
+
+    <span class="function"><span class="keyword">function</span> <span class="title">StructArrayType</span><span class="params">()</span> {</span>
+        StructArray.apply(<span class="keyword">this</span>, arguments);
+        <span class="keyword">this</span>.members = StructType.prototype.members;
+    }
+
+    StructArrayType.serialize = serializeStructArrayType;
+
+    StructArrayType.prototype = Object.create(StructArray.prototype);
+    StructArrayType.prototype.StructType = StructType;
+    StructArrayType.prototype.bytesPerElement = StructType.prototype.size;
+    StructArrayType.prototype.emplaceBack = createEmplaceBack(StructType.prototype.members, StructType.prototype.size);
+    StructArrayType.prototype._usedTypes = usedTypes;
+
+
+    structArrayTypeCache[key] = StructArrayType;
+
+    <span class="keyword">return</span> StructArrayType;
+}
+
+<span class="comment">/**
+ * Serialize the StructArray type. This serializes the *type* not an instance of the type.
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">serializeStructArrayType</span><span class="params">()</span> {</span>
+    <span class="keyword">return</span> {
+        members: <span class="keyword">this</span>.prototype.StructType.prototype.members,
+        alignment: <span class="keyword">this</span>.prototype.StructType.prototype.alignment,
+        bytesPerElement: <span class="keyword">this</span>.prototype.bytesPerElement
+    };
+}
+
+
+<span class="function"><span class="keyword">function</span> <span class="title">align</span><span class="params">(offset, size)</span> {</span>
+    <span class="keyword">return</span> Math.ceil(offset / size) * size;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">sizeOf</span><span class="params">(type)</span> {</span>
+    <span class="keyword">return</span> viewTypes[type].BYTES_PER_ELEMENT;
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">getArrayViewName</span><span class="params">(type)</span> {</span>
+    <span class="keyword">return</span> type.toLowerCase();
+}
+
+
+<span class="comment">/*
+ * > I saw major perf gains by shortening the source of these generated methods (i.e. renaming
+ * > elementIndex to i) (likely due to v8 inlining heuristics).
+ * - lucaswoj
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">createEmplaceBack</span><span class="params">(members, bytesPerElement)</span> {</span>
+    <span class="keyword">var</span> usedTypeSizes = [];
+    <span class="keyword">var</span> argNames = [];
+    <span class="keyword">var</span> body = <span class="string">''</span> +
+    <span class="string">'var i = this.length;\n'</span> +
+    <span class="string">'this.resize(this.length + 1);\n'</span>;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> m = <span class="number">0</span>; m &lt; members.length; m++) {
+        <span class="keyword">var</span> member = members[m];
+        <span class="keyword">var</span> size = sizeOf(member.type);
+
+        <span class="keyword">if</span> (usedTypeSizes.indexOf(size) &lt; <span class="number">0</span>) {
+            usedTypeSizes.push(size);
+            body += <span class="string">'var o'</span> + size.toFixed(<span class="number">0</span>) + <span class="string">' = i * '</span> + (bytesPerElement / size).toFixed(<span class="number">0</span>) + <span class="string">';\n'</span>;
+        }
+
+        <span class="keyword">for</span> (<span class="keyword">var</span> c = <span class="number">0</span>; c &lt; member.components; c++) {
+            <span class="keyword">var</span> argName = <span class="string">'v'</span> + argNames.length;
+            <span class="keyword">var</span> index = <span class="string">'o'</span> + size.toFixed(<span class="number">0</span>) + <span class="string">' + '</span> + (member.offset / size + c).toFixed(<span class="number">0</span>);
+            body += <span class="string">'this.'</span> + getArrayViewName(member.type) + <span class="string">'['</span> + index + <span class="string">'] = '</span> + argName + <span class="string">';\n'</span>;
+            argNames.push(argName);
+        }
+    }
+
+    body += <span class="string">'return i;'</span>;
+
+    <span class="keyword">return</span> <span class="keyword">new</span> Function(argNames, body);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createMemberComponentString</span><span class="params">(member, component)</span> {</span>
+    <span class="keyword">var</span> elementOffset = <span class="string">'this._pos'</span> + sizeOf(member.type).toFixed(<span class="number">0</span>);
+    <span class="keyword">var</span> componentOffset = (member.offset / sizeOf(member.type) + component).toFixed(<span class="number">0</span>);
+    <span class="keyword">var</span> index = elementOffset + <span class="string">' + '</span> + componentOffset;
+    <span class="keyword">return</span> <span class="string">'this._structArray.'</span> + getArrayViewName(member.type) + <span class="string">'['</span> + index + <span class="string">']'</span>;
+
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createGetter</span><span class="params">(member, c)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> Function([], <span class="string">'return '</span> + createMemberComponentString(member, c) + <span class="string">';'</span>);
+}
+
+<span class="function"><span class="keyword">function</span> <span class="title">createSetter</span><span class="params">(member, c)</span> {</span>
+    <span class="keyword">return</span> <span class="keyword">new</span> Function([<span class="string">'x'</span>], createMemberComponentString(member, c) + <span class="string">' = x;'</span>);
+}
+
+<span class="comment">/**
+ * @class Struct
+ * @param {StructArray} structArray The StructArray the struct is stored in
+ * @param {number} index The index of the struct in the StructArray.
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Struct</span><span class="params">(structArray, index)</span> {</span>
+    <span class="keyword">this</span>._structArray = structArray;
+    <span class="keyword">this</span>._pos1 = index * <span class="keyword">this</span>.size;
+    <span class="keyword">this</span>._pos2 = <span class="keyword">this</span>._pos1 / <span class="number">2</span>;
+    <span class="keyword">this</span>._pos4 = <span class="keyword">this</span>._pos1 / <span class="number">4</span>;
+    <span class="keyword">this</span>._pos8 = <span class="keyword">this</span>._pos1 / <span class="number">8</span>;
+}
+
+<span class="comment">/**
+ * @class StructArray
+ * The StructArray class is inherited by the custom StructArrayType classes created with
+ * `new StructArrayType(members, options)`.
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">StructArray</span><span class="params">(serialized)</span> {</span>
+    <span class="keyword">if</span> (serialized !== <span class="literal">undefined</span>) {
+    <span class="comment">// Create from an serialized StructArray</span>
+        <span class="keyword">this</span>.arrayBuffer = serialized.arrayBuffer;
+        <span class="keyword">this</span>.length = serialized.length;
+        <span class="keyword">this</span>.capacity = <span class="keyword">this</span>.arrayBuffer.byteLength / <span class="keyword">this</span>.bytesPerElement;
+        <span class="keyword">this</span>._refreshViews();
+
+    <span class="comment">// Create a new StructArray</span>
+    } <span class="keyword">else</span> {
+        <span class="keyword">this</span>.capacity = -<span class="number">1</span>;
+        <span class="keyword">this</span>.resize(<span class="number">0</span>);
+    }
+}
+
+<span class="comment">/**
+ * @property {number}
+ * @private
+ * @readonly
+ */</span>
+StructArray.prototype.DEFAULT_CAPACITY = <span class="number">128</span>;
+
+<span class="comment">/**
+ * @property {number}
+ * @private
+ * @readonly
+ */</span>
+StructArray.prototype.RESIZE_MULTIPLIER = <span class="number">5</span>;
+
+<span class="comment">/**
+ * Serialize this StructArray instance
+ * @private
+ */</span>
+StructArray.prototype.serialize = <span class="keyword">function</span>() {
+    <span class="keyword">this</span>.trim();
+    <span class="keyword">return</span> {
+        length: <span class="keyword">this</span>.length,
+        arrayBuffer: <span class="keyword">this</span>.arrayBuffer
+    };
+};
+
+<span class="comment">/**
+ * Return the Struct at the given location in the array.
+ * @private
+ * @param {number} index The index of the element.
+ */</span>
+StructArray.prototype.get = <span class="keyword">function</span>(index) {
+    <span class="keyword">return</span> <span class="keyword">new</span> <span class="keyword">this</span>.StructType(<span class="keyword">this</span>, index);
+};
+
+<span class="comment">/**
+ * Resize the array to discard unused capacity.
+ * @private
+ */</span>
+StructArray.prototype.trim = <span class="keyword">function</span>() {
+    <span class="keyword">if</span> (<span class="keyword">this</span>.length !== <span class="keyword">this</span>.capacity) {
+        <span class="keyword">this</span>.capacity = <span class="keyword">this</span>.length;
+        <span class="keyword">this</span>.arrayBuffer = <span class="keyword">this</span>.arrayBuffer.slice(<span class="number">0</span>, <span class="keyword">this</span>.length * <span class="keyword">this</span>.bytesPerElement);
+        <span class="keyword">this</span>._refreshViews();
+    }
+};
+
+<span class="comment">/**
+ * Resize the array.
+ * If `n` is greater than the current length then additional elements with undefined values are added.
+ * If `n` is less than the current length then the array will be reduced to the first `n` elements.
+ * @param {number} n The new size of the array.
+ */</span>
+StructArray.prototype.resize = <span class="keyword">function</span>(n) {
+    <span class="keyword">this</span>.length = n;
+    <span class="keyword">if</span> (n > <span class="keyword">this</span>.capacity) {
+        <span class="keyword">this</span>.capacity = Math.max(n, Math.floor(<span class="keyword">this</span>.capacity * <span class="keyword">this</span>.RESIZE_MULTIPLIER), <span class="keyword">this</span>.DEFAULT_CAPACITY);
+        <span class="keyword">this</span>.arrayBuffer = <span class="keyword">new</span> ArrayBuffer(<span class="keyword">this</span>.capacity * <span class="keyword">this</span>.bytesPerElement);
+
+        <span class="keyword">var</span> oldUint8Array = <span class="keyword">this</span>.uint8;
+        <span class="keyword">this</span>._refreshViews();
+        <span class="keyword">if</span> (oldUint8Array) <span class="keyword">this</span>.uint8.set(oldUint8Array);
+    }
+};
+
+<span class="comment">/**
+ * Create TypedArray views for the current ArrayBuffer.
+ * @private
+ */</span>
+StructArray.prototype._refreshViews = <span class="keyword">function</span>() {
+    <span class="keyword">for</span> (<span class="keyword">var</span> t = <span class="number">0</span>; t &lt; <span class="keyword">this</span>._usedTypes.length; t++) {
+        <span class="keyword">var</span> type = <span class="keyword">this</span>._usedTypes[t];
+        <span class="keyword">this</span>[getArrayViewName(type)] = <span class="keyword">new</span> viewTypes[type](<span class="keyword">this</span>.arrayBuffer);
+    }
+};
+</code></pre>

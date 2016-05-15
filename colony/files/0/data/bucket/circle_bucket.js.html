@@ -1,0 +1,103 @@
+<h1>circle_bucket.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> Bucket = require(<span class="string">'../bucket'</span>);
+<span class="keyword">var</span> util = require(<span class="string">'../../util/util'</span>);
+<span class="keyword">var</span> loadGeometry = require(<span class="string">'../load_geometry'</span>);
+<span class="keyword">var</span> EXTENT = Bucket.EXTENT;
+
+module.exports = CircleBucket;
+
+<span class="comment">/**
+ * Circles are represented by two triangles.
+ *
+ * Each corner has a pos that is the center of the circle and an extrusion
+ * vector that is where it points.
+ * @private
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">CircleBucket</span><span class="params">()</span> {</span>
+    Bucket.apply(<span class="keyword">this</span>, arguments);
+}
+
+CircleBucket.prototype = util.inherit(Bucket, {});
+
+CircleBucket.prototype.addCircleVertex = <span class="keyword">function</span>(vertexArray, x, y, extrudeX, extrudeY) {
+    <span class="keyword">return</span> vertexArray.emplaceBack(
+            (x * <span class="number">2</span>) + ((extrudeX + <span class="number">1</span>) / <span class="number">2</span>),
+            (y * <span class="number">2</span>) + ((extrudeY + <span class="number">1</span>) / <span class="number">2</span>));
+};
+
+CircleBucket.prototype.programInterfaces = {
+    circle: {
+        vertexBuffer: <span class="literal">true</span>,
+        elementBuffer: <span class="literal">true</span>,
+
+        layoutAttributes: [{
+            name: <span class="string">'a_pos'</span>,
+            components: <span class="number">2</span>,
+            type: <span class="string">'Int16'</span>
+        }],
+        paintAttributes: [{
+            name: <span class="string">'a_color'</span>,
+            components: <span class="number">4</span>,
+            type: <span class="string">'Uint8'</span>,
+            getValue: <span class="keyword">function</span>(layer, globalProperties, featureProperties) {
+                <span class="keyword">return</span> util.premultiply(layer.getPaintValue(<span class="string">"circle-color"</span>, globalProperties, featureProperties));
+            },
+            multiplier: <span class="number">255</span>,
+            paintProperty: <span class="string">'circle-color'</span>
+        }, {
+            name: <span class="string">'a_radius'</span>,
+            components: <span class="number">1</span>,
+            type: <span class="string">'Uint16'</span>,
+            isLayerConstant: <span class="literal">false</span>,
+            getValue: <span class="keyword">function</span>(layer, globalProperties, featureProperties) {
+                <span class="keyword">return</span> [layer.getPaintValue(<span class="string">"circle-radius"</span>, globalProperties, featureProperties)];
+            },
+            multiplier: <span class="number">10</span>,
+            paintProperty: <span class="string">'circle-radius'</span>
+        }]
+    }
+};
+
+CircleBucket.prototype.addFeature = <span class="keyword">function</span>(feature) {
+    <span class="keyword">var</span> globalProperties = {zoom: <span class="keyword">this</span>.zoom};
+    <span class="keyword">var</span> geometries = loadGeometry(feature);
+
+    <span class="keyword">var</span> startGroup = <span class="keyword">this</span>.makeRoomFor(<span class="string">'circle'</span>, <span class="number">0</span>);
+    <span class="keyword">var</span> startIndex = startGroup.layout.vertex.length;
+
+    <span class="keyword">for</span> (<span class="keyword">var</span> j = <span class="number">0</span>; j &lt; geometries.length; j++) {
+        <span class="keyword">for</span> (<span class="keyword">var</span> k = <span class="number">0</span>; k &lt; geometries[j].length; k++) {
+
+            <span class="keyword">var</span> x = geometries[j][k].x;
+            <span class="keyword">var</span> y = geometries[j][k].y;
+
+            <span class="comment">// Do not include points that are outside the tile boundaries.</span>
+            <span class="keyword">if</span> (x &lt; <span class="number">0</span> || x >= EXTENT || y &lt; <span class="number">0</span> || y >= EXTENT) <span class="keyword">continue</span>;
+
+            <span class="comment">// this geometry will be of the Point type, and we'll derive</span>
+            <span class="comment">// two triangles from it.</span>
+            <span class="comment">//</span>
+            <span class="comment">// ┌─────────┐</span>
+            <span class="comment">// │ 3     2 │</span>
+            <span class="comment">// │         │</span>
+            <span class="comment">// │ 0     1 │</span>
+            <span class="comment">// └─────────┘</span>
+
+            <span class="keyword">var</span> group = <span class="keyword">this</span>.makeRoomFor(<span class="string">'circle'</span>, <span class="number">4</span>);
+            <span class="keyword">var</span> vertexArray = group.layout.vertex;
+
+            <span class="keyword">var</span> index = <span class="keyword">this</span>.addCircleVertex(vertexArray, x, y, -<span class="number">1</span>, -<span class="number">1</span>);
+            <span class="keyword">this</span>.addCircleVertex(vertexArray, x, y, <span class="number">1</span>, -<span class="number">1</span>);
+            <span class="keyword">this</span>.addCircleVertex(vertexArray, x, y, <span class="number">1</span>, <span class="number">1</span>);
+            <span class="keyword">this</span>.addCircleVertex(vertexArray, x, y, -<span class="number">1</span>, <span class="number">1</span>);
+
+            group.layout.element.emplaceBack(index, index + <span class="number">1</span>, index + <span class="number">2</span>);
+            group.layout.element.emplaceBack(index, index + <span class="number">3</span>, index + <span class="number">2</span>);
+        }
+    }
+
+    <span class="keyword">this</span>.addPaintAttributes(<span class="string">'circle'</span>, globalProperties, feature.properties, startGroup, startIndex);
+};
+</code></pre>

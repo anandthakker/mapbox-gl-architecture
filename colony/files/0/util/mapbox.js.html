@@ -1,0 +1,81 @@
+<h1>mapbox.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+<span class="keyword">var</span> config = require(<span class="string">'./config'</span>);
+<span class="keyword">var</span> browser = require(<span class="string">'./browser'</span>);
+
+<span class="function"><span class="keyword">function</span> <span class="title">normalizeURL</span><span class="params">(url, pathPrefix, accessToken)</span> {</span>
+    accessToken = accessToken || config.ACCESS_TOKEN;
+
+    <span class="keyword">if</span> (!accessToken &amp;&amp; config.REQUIRE_ACCESS_TOKEN) {
+        <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'An API access token is required to use Mapbox GL. '</span> +
+            <span class="string">'See https://www.mapbox.com/developers/api/#access-tokens'</span>);
+    }
+
+    url = url.replace(<span class="regexp">/^mapbox:\/\//</span>, config.API_URL + pathPrefix);
+    url += url.indexOf(<span class="string">'?'</span>) !== -<span class="number">1</span> ? <span class="string">'&amp;access_token='</span> : <span class="string">'?access_token='</span>;
+
+    <span class="keyword">if</span> (config.REQUIRE_ACCESS_TOKEN) {
+        <span class="keyword">if</span> (accessToken[<span class="number">0</span>] === <span class="string">'s'</span>) {
+            <span class="keyword">throw</span> <span class="keyword">new</span> Error(<span class="string">'Use a public access token (pk.*) with Mapbox GL JS, not a secret access token (sk.*). '</span> +
+                <span class="string">'See https://www.mapbox.com/developers/api/#access-tokens'</span>);
+        }
+
+        url += accessToken;
+    }
+
+    <span class="keyword">return</span> url;
+}
+
+module.exports.normalizeStyleURL = <span class="keyword">function</span>(url, accessToken) {
+    <span class="keyword">if</span> (!url.match(<span class="regexp">/^mapbox:\/\/styles\//</span>))
+        <span class="keyword">return</span> url;
+
+    <span class="keyword">var</span> split = url.split(<span class="string">'/'</span>);
+    <span class="keyword">var</span> user = split[<span class="number">3</span>];
+    <span class="keyword">var</span> style = split[<span class="number">4</span>];
+    <span class="keyword">var</span> draft = split[<span class="number">5</span>] ? <span class="string">'/draft'</span> : <span class="string">''</span>;
+    <span class="keyword">return</span> normalizeURL(<span class="string">'mapbox://'</span> + user + <span class="string">'/'</span> + style + draft, <span class="string">'/styles/v1/'</span>, accessToken);
+};
+
+module.exports.normalizeSourceURL = <span class="keyword">function</span>(url, accessToken) {
+    <span class="keyword">if</span> (!url.match(<span class="regexp">/^mapbox:\/\//</span>))
+        <span class="keyword">return</span> url;
+
+    <span class="comment">// TileJSON requests need a secure flag appended to their URLs so</span>
+    <span class="comment">// that the server knows to send SSL-ified resource references.</span>
+    <span class="keyword">return</span> normalizeURL(url + <span class="string">'.json'</span>, <span class="string">'/v4/'</span>, accessToken) + <span class="string">'&amp;secure'</span>;
+};
+
+module.exports.normalizeGlyphsURL = <span class="keyword">function</span>(url, accessToken) {
+    <span class="keyword">if</span> (!url.match(<span class="regexp">/^mapbox:\/\//</span>))
+        <span class="keyword">return</span> url;
+
+    <span class="keyword">var</span> user = url.split(<span class="string">'/'</span>)[<span class="number">3</span>];
+    <span class="keyword">return</span> normalizeURL(<span class="string">'mapbox://'</span> + user + <span class="string">'/{fontstack}/{range}.pbf'</span>, <span class="string">'/fonts/v1/'</span>, accessToken);
+};
+
+module.exports.normalizeSpriteURL = <span class="keyword">function</span>(url, format, ext, accessToken) {
+    <span class="keyword">if</span> (!url.match(<span class="regexp">/^mapbox:\/\/sprites\//</span>))
+        <span class="keyword">return</span> url + format + ext;
+
+    <span class="keyword">var</span> split = url.split(<span class="string">'/'</span>);
+    <span class="keyword">var</span> user = split[<span class="number">3</span>];
+    <span class="keyword">var</span> style = split[<span class="number">4</span>];
+    <span class="keyword">var</span> draft = split[<span class="number">5</span>] ? <span class="string">'/draft'</span> : <span class="string">''</span>;
+    <span class="keyword">return</span> normalizeURL(<span class="string">'mapbox://'</span> + user + <span class="string">'/'</span> + style + draft + <span class="string">'/sprite'</span> + format + ext, <span class="string">'/styles/v1/'</span>, accessToken);
+};
+
+module.exports.normalizeTileURL = <span class="keyword">function</span>(url, sourceUrl, tileSize) {
+    <span class="keyword">if</span> (!sourceUrl || !sourceUrl.match(<span class="regexp">/^mapbox:\/\//</span>))
+        <span class="keyword">return</span> url;
+
+    <span class="comment">// The v4 mapbox tile API supports 512x512 image tiles only when @2x</span>
+    <span class="comment">// is appended to the tile URL. If `tileSize: 512` is specified for</span>
+    <span class="comment">// a Mapbox raster source force the @2x suffix even if a non hidpi</span>
+    <span class="comment">// device.</span>
+    url = url.replace(<span class="regexp">/([?&amp;]access_token=)tk\.[^&amp;]+/</span>, <span class="string">'$1'</span> + config.ACCESS_TOKEN);
+    <span class="keyword">var</span> extension = browser.supportsWebp ? <span class="string">'webp'</span> : <span class="string">'$1'</span>;
+    <span class="keyword">return</span> url.replace(<span class="regexp">/\.((?:png|jpg)\d*)(?=$|\?)/</span>, browser.devicePixelRatio >= <span class="number">2</span> || tileSize === <span class="number">512</span> ? <span class="string">'@2x.'</span> + extension : <span class="string">'.'</span> + extension);
+};
+</code></pre>

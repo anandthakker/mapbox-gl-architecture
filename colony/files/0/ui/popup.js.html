@@ -1,0 +1,232 @@
+<h1>popup.js</h1>
+<pre><code class="lang-js"><span class="string">'use strict'</span>;
+
+module.exports = Popup;
+
+<span class="keyword">var</span> util = require(<span class="string">'../util/util'</span>);
+<span class="keyword">var</span> Evented = require(<span class="string">'../util/evented'</span>);
+<span class="keyword">var</span> DOM = require(<span class="string">'../util/dom'</span>);
+<span class="keyword">var</span> LngLat = require(<span class="string">'../geo/lng_lat'</span>);
+
+<span class="comment">/**
+ * Creates a popup component
+ * @class Popup
+ * @param {Object} options
+ * @param {boolean} options.closeButton whether to show a close button in the
+ * top right corner of the popup.
+ * @param {boolean} options.closeOnClick whether to close the popup when the
+ * map is clicked.
+ * @param {string} options.anchor - One of "top", "bottom", "left", "right", "top-left",
+ * "top-right", "bottom-left", or "bottom-right", describing where the popup's anchor
+ * relative to the coordinate set via `setLngLat`.
+ * @example
+ * var tooltip = new mapboxgl.Popup()
+ *   .setLngLat(e.lngLat)
+ *   .setHTML("&lt;h1>Hello World!&lt;/h1>")
+ *   .addTo(map);
+ */</span>
+<span class="function"><span class="keyword">function</span> <span class="title">Popup</span><span class="params">(options)</span> {</span>
+    util.setOptions(<span class="keyword">this</span>, options);
+    util.bindAll([
+        <span class="string">'_update'</span>,
+        <span class="string">'_onClickClose'</span>],
+        <span class="keyword">this</span>);
+}
+
+Popup.prototype = util.inherit(Evented, <span class="comment">/** @lends Popup.prototype */</span>{
+    options: {
+        closeButton: <span class="literal">true</span>,
+        closeOnClick: <span class="literal">true</span>
+    },
+
+    <span class="comment">/**
+     * Attaches the popup to a map
+     * @param {Map} map
+     * @returns {Popup} `this`
+     */</span>
+    addTo: <span class="keyword">function</span>(map) {
+        <span class="keyword">this</span>._map = map;
+        <span class="keyword">this</span>._map.on(<span class="string">'move'</span>, <span class="keyword">this</span>._update);
+        <span class="keyword">if</span> (<span class="keyword">this</span>.options.closeOnClick) {
+            <span class="keyword">this</span>._map.on(<span class="string">'click'</span>, <span class="keyword">this</span>._onClickClose);
+        }
+        <span class="keyword">this</span>._update();
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Removes the popup from a map
+     * @example
+     * var popup = new mapboxgl.Popup().addTo(map);
+     * popup.remove();
+     * @returns {Popup} `this`
+     */</span>
+    remove: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._content &amp;&amp; <span class="keyword">this</span>._content.parentNode) {
+            <span class="keyword">this</span>._content.parentNode.removeChild(<span class="keyword">this</span>._content);
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._container) {
+            <span class="keyword">this</span>._container.parentNode.removeChild(<span class="keyword">this</span>._container);
+            <span class="keyword">delete</span> <span class="keyword">this</span>._container;
+        }
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>._map) {
+            <span class="keyword">this</span>._map.off(<span class="string">'move'</span>, <span class="keyword">this</span>._update);
+            <span class="keyword">this</span>._map.off(<span class="string">'click'</span>, <span class="keyword">this</span>._onClickClose);
+            <span class="keyword">delete</span> <span class="keyword">this</span>._map;
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Get the popup's geographical location
+     * @returns {LngLat}
+     */</span>
+    getLngLat: <span class="keyword">function</span>() {
+        <span class="keyword">return</span> <span class="keyword">this</span>._lngLat;
+    },
+
+    <span class="comment">/**
+     * Set the popup's geographical position and move it.
+     * @param {LngLat} lnglat
+     * @returns {Popup} `this`
+     */</span>
+    setLngLat: <span class="keyword">function</span>(lnglat) {
+        <span class="keyword">this</span>._lngLat = LngLat.convert(lnglat);
+        <span class="keyword">this</span>._update();
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    <span class="comment">/**
+     * Fill a popup element with text only content. This creates a text node
+     * in the DOM, so it cannot end up appending raw HTML. Use this method
+     * if you want an added level of security against XSS if the popup
+     * content is user-provided.
+     * @param {string} text
+     * @returns {Popup} `this`
+     * @example
+     * var tooltip = new mapboxgl.Popup()
+     *   .setLngLat(e.lngLat)
+     *   .setText('Hello, world!')
+     *   .addTo(map);
+     */</span>
+    setText: <span class="keyword">function</span>(text) {
+        <span class="keyword">return</span> <span class="keyword">this</span>.setDOMContent(document.createTextNode(text));
+    },
+
+    <span class="comment">/**
+     * Fill a popup element with HTML content, provided as a string.
+     * @param {string} html
+     * @returns {Popup} `this`
+     */</span>
+    setHTML: <span class="keyword">function</span>(html) {
+        <span class="keyword">var</span> frag = document.createDocumentFragment();
+        <span class="keyword">var</span> temp = document.createElement(<span class="string">'body'</span>), child;
+        temp.innerHTML = html;
+        <span class="keyword">while</span> (<span class="literal">true</span>) {
+            child = temp.firstChild;
+            <span class="keyword">if</span> (!child) <span class="keyword">break</span>;
+            frag.appendChild(child);
+        }
+
+        <span class="keyword">return</span> <span class="keyword">this</span>.setDOMContent(frag);
+    },
+
+    <span class="comment">/**
+     * Fill a popup element with DOM content
+     * @param {Node} htmlNode Popup content as a DOM node
+     * @returns {Popup} `this`
+     * @example
+     * // create an element with the popup content
+     * var div = document.createElement('div');
+     * div.innerHTML = 'Hello, world!';
+     * var tooltip = new mapboxgl.Popup()
+     *   .setLngLat(e.lngLat)
+     *   .setDOMContent(div)
+     *   .addTo(map);
+     */</span>
+    setDOMContent: <span class="keyword">function</span>(htmlNode) {
+        <span class="keyword">this</span>._createContent();
+        <span class="keyword">this</span>._content.appendChild(htmlNode);
+        <span class="keyword">this</span>._update();
+        <span class="keyword">return</span> <span class="keyword">this</span>;
+    },
+
+    _createContent: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (<span class="keyword">this</span>._content &amp;&amp; <span class="keyword">this</span>._content.parentNode) {
+            <span class="keyword">this</span>._content.parentNode.removeChild(<span class="keyword">this</span>._content);
+        }
+
+        <span class="keyword">this</span>._content = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-popup-content'</span>, <span class="keyword">this</span>._container);
+
+        <span class="keyword">if</span> (<span class="keyword">this</span>.options.closeButton) {
+            <span class="keyword">this</span>._closeButton = DOM.create(<span class="string">'button'</span>, <span class="string">'mapboxgl-popup-close-button'</span>, <span class="keyword">this</span>._content);
+            <span class="keyword">this</span>._closeButton.innerHTML = <span class="string">'&amp;#215;'</span>;
+            <span class="keyword">this</span>._closeButton.addEventListener(<span class="string">'click'</span>, <span class="keyword">this</span>._onClickClose);
+        }
+    },
+
+    _update: <span class="keyword">function</span>() {
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._map || !<span class="keyword">this</span>._lngLat || !<span class="keyword">this</span>._content) { <span class="keyword">return</span>; }
+
+        <span class="keyword">if</span> (!<span class="keyword">this</span>._container) {
+            <span class="keyword">this</span>._container = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-popup'</span>, <span class="keyword">this</span>._map.getContainer());
+            <span class="keyword">this</span>._tip       = DOM.create(<span class="string">'div'</span>, <span class="string">'mapboxgl-popup-tip'</span>, <span class="keyword">this</span>._container);
+            <span class="keyword">this</span>._container.appendChild(<span class="keyword">this</span>._content);
+        }
+
+        <span class="keyword">var</span> pos = <span class="keyword">this</span>._map.project(<span class="keyword">this</span>._lngLat).round(),
+            anchor = <span class="keyword">this</span>.options.anchor;
+
+        <span class="keyword">if</span> (!anchor) {
+            <span class="keyword">var</span> width = <span class="keyword">this</span>._container.offsetWidth,
+                height = <span class="keyword">this</span>._container.offsetHeight;
+
+            <span class="keyword">if</span> (pos.y &lt; height) {
+                anchor = [<span class="string">'top'</span>];
+            } <span class="keyword">else</span> <span class="keyword">if</span> (pos.y > <span class="keyword">this</span>._map.transform.height - height) {
+                anchor = [<span class="string">'bottom'</span>];
+            } <span class="keyword">else</span> {
+                anchor = [];
+            }
+
+            <span class="keyword">if</span> (pos.x &lt; width / <span class="number">2</span>) {
+                anchor.push(<span class="string">'left'</span>);
+            } <span class="keyword">else</span> <span class="keyword">if</span> (pos.x > <span class="keyword">this</span>._map.transform.width - width / <span class="number">2</span>) {
+                anchor.push(<span class="string">'right'</span>);
+            }
+
+            <span class="keyword">if</span> (anchor.length === <span class="number">0</span>) {
+                anchor = <span class="string">'bottom'</span>;
+            } <span class="keyword">else</span> {
+                anchor = anchor.join(<span class="string">'-'</span>);
+            }
+        }
+
+        <span class="keyword">var</span> anchorTranslate = {
+            <span class="string">'top'</span>: <span class="string">'translate(-50%,0)'</span>,
+            <span class="string">'top-left'</span>: <span class="string">'translate(0,0)'</span>,
+            <span class="string">'top-right'</span>: <span class="string">'translate(-100%,0)'</span>,
+            <span class="string">'bottom'</span>: <span class="string">'translate(-50%,-100%)'</span>,
+            <span class="string">'bottom-left'</span>: <span class="string">'translate(0,-100%)'</span>,
+            <span class="string">'bottom-right'</span>: <span class="string">'translate(-100%,-100%)'</span>,
+            <span class="string">'left'</span>: <span class="string">'translate(0,-50%)'</span>,
+            <span class="string">'right'</span>: <span class="string">'translate(-100%,-50%)'</span>
+        };
+
+        <span class="keyword">var</span> classList = <span class="keyword">this</span>._container.classList;
+        <span class="keyword">for</span> (<span class="keyword">var</span> key <span class="keyword">in</span> anchorTranslate) {
+            classList.remove(<span class="string">'mapboxgl-popup-anchor-'</span> + key);
+        }
+        classList.add(<span class="string">'mapboxgl-popup-anchor-'</span> + anchor);
+
+        DOM.setTransform(<span class="keyword">this</span>._container, anchorTranslate[anchor] + <span class="string">' translate('</span> + pos.x + <span class="string">'px,'</span> + pos.y + <span class="string">'px)'</span>);
+    },
+
+    _onClickClose: <span class="keyword">function</span>() {
+        <span class="keyword">this</span>.remove();
+    }
+});
+</code></pre>
