@@ -93,7 +93,7 @@ code .title   { color:#4271AE; }
     width:100%;
 }
 
-.showig-code #readme {
+#readme.showing-code {
     color:#252929;
     pointer-events: all;
 }
